@@ -1,0 +1,12 @@
+const EARN_STATUS = Object.freeze({
+  PENDING: "PENDING",
+  PROCESSING: "PROCESSING",
+  ACTIVE: "ACTIVE",
+  CLAIMING: "CLAIMING",
+  CLAIMED: "CLAIMED",
+  FAILED: "FAILED",
+});
+
+module.exports = {
+  EARN_STATUS,
+};

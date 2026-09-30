@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: valoracore-backend
+    restart: always
+    ports:
+      - "3000:3000" # [Port di Laptop/Server] : [Port di dalam Container]
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules

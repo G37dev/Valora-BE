@@ -1,0 +1,400 @@
+const crypto = require("crypto");
+const { earnClaimQueue } = require("../queues/earn-claim.queue");
+const { EarnPosition } = require("../models");
+const { earnQueue } = require("../queues/earn.queue");
+const { createPendingEarn } = require("../services/earn/earn.service");
+const { formatEarnError } = require("../utils/earn-error");
+const { EARN_STATUS } = require("../services/earn/earn.constants");
+
+const getUserEarnPositions = async (req, res) => {
+  try {
+    const { core_id } = req.params;
+
+    if (!core_id) {
+      return res.status(400).json({
+        success: false,
+        message: "core_id wajib diisi.",
+      });
+    }
+
+    const positions = await EarnPosition.findAll({
+      where: {
+        coreId: core_id,
+      },
+      order: [["created_at", "DESC"]],
+    });
+
+    // =========================================
+    // SUMMARY
+    // =========================================
+
+    const activePositions = positions.filter((position) =>
+      ["PENDING", "PROCESSING", "ACTIVE", "CLAIMING"].includes(position.status),
+    );
+
+    const finishedPositions = positions.filter((position) =>
+      ["CLAIMED", "FINISHED"].includes(position.status),
+    );
+
+    // =========================================
+    // FORMAT POSITION
+    // =========================================
+
+    const formattedPositions = positions.map((position) => {
+      const principal = Number(position.principal || 0);
+      const aprBps = Number(position.aprBps || 0);
+      const termCode = Number(position.termCode || 0);
+
+      const estimatedReward = (principal * aprBps * termCode) / (365 * 10000);
+
+      const maturityAt = position.maturityAt
+        ? new Date(position.maturityAt)
+        : null;
+
+      const canClaim =
+        position.status === "ACTIVE" &&
+        maturityAt &&
+        maturityAt.getTime() <= Date.now();
+
+      return {
+        id: position.id,
+
+        core_id: position.coreId,
+
+        position_id: position.positionId,
+
+        asset: position.asset,
+
+        principal: String(position.principal),
+
+        apr_bps: aprBps,
+
+        apr: aprBps / 100,
+
+        term_code: termCode,
+
+        status: position.status,
+
+        tx_hash: position.txHash,
+
+        created_at: position.createdAt,
+
+        maturity_at: position.maturityAt,
+
+        estimated_reward: estimatedReward.toString(),
+
+        total_payout: (principal + estimatedReward).toString(),
+
+        can_claim: Boolean(canClaim),
+      };
+    });
+
+    // =========================================
+    // RESPONSE
+    // =========================================
+
+    return res.status(200).json({
+      success: true,
+
+      summary: {
+        active: activePositions.length,
+        finished: finishedPositions.length,
+        total: positions.length,
+      },
+
+      data: formattedPositions,
+    });
+  } catch (error) {
+    console.error("[Earn] get positions error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: formatEarnError(error),
+    });
+  }
+};
+
+/**
+ * CREATE EARN
+ */
+const recordEarnPosition = async (req, res) => {
+  try {
+    const { core_id, asset, amount, principal, term_code } = req.body;
+
+    if (!core_id) {
+      return res.status(400).json({
+        success: false,
+        message: "core_id wajib diisi.",
+      });
+    }
+
+    const inputAmount =
+      amount !== undefined && amount !== null ? amount : principal;
+
+    if (
+      inputAmount === undefined ||
+      inputAmount === null ||
+      String(inputAmount).trim() === ""
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "amount wajib diisi.",
+      });
+    }
+
+    /**
+     * Setiap request Earn = transaksi baru.
+     *
+     * UUID berbeda untuk setiap request.
+     */
+    const idempotencyKey = crypto.randomUUID();
+
+    console.log("[Earn] Creating:", {
+      coreId: core_id,
+      asset,
+      amount: inputAmount,
+      termCode: term_code,
+      idempotencyKey,
+    });
+
+    /**
+     * CREATE PENDING POSITION
+     */
+    const result = await createPendingEarn({
+      coreId: core_id,
+      asset,
+      amount: inputAmount,
+      termCode: term_code,
+      idempotencyKey,
+    });
+
+    /**
+     * Kalau service menemukan key yang sama.
+     */
+    if (result.isExisting) {
+      const position = result.position;
+
+      return res.status(200).json({
+        success: true,
+        message: "Earn sudah pernah dibuat.",
+        data: {
+          id: position.id,
+          core_id: position.coreId,
+          asset: position.asset,
+          amount: position.principal,
+          position_id: position.positionId,
+          term_code: position.termCode,
+          status: position.status,
+          tx_hash: position.txHash,
+        },
+      });
+    }
+
+    /**
+     * MASUK BULLMQ
+     */
+    const job = await earnQueue.add(
+      "process-earn",
+      {
+        positionId: result.position.id,
+      },
+      {
+        jobId: `earn-${result.position.id}`,
+      },
+    );
+
+    console.log("[Earn] Job queued:", {
+      jobId: job.id,
+      positionId: result.position.id,
+    });
+
+    /**
+     * RESPONSE
+     */
+    return res.status(202).json({
+      success: true,
+      message: "Earn sedang diproses.",
+      data: {
+        id: result.position.id,
+        core_id,
+        asset: result.position.asset,
+        amount: result.position.principal,
+        position_id: result.position.positionId,
+        term_code: result.position.termCode,
+        status: result.position.status,
+      },
+    });
+  } catch (error) {
+    console.error("[Earn] create error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: formatEarnError(error),
+    });
+  }
+};
+
+/**
+ * CLAIM EARN
+ */
+const claimEarnPosition = async (req, res) => {
+  try {
+    const { position_id } = req.params;
+    const { core_id } = req.body;
+
+    if (!position_id) {
+      return res.status(400).json({
+        success: false,
+        message: "position_id wajib diisi.",
+      });
+    }
+
+    if (!core_id) {
+      return res.status(400).json({
+        success: false,
+        message: "core_id wajib diisi.",
+      });
+    }
+
+    const position = await EarnPosition.findOne({
+      where: {
+        id: position_id,
+        coreId: core_id,
+      },
+    });
+
+    if (!position) {
+      return res.status(404).json({
+        success: false,
+        message: "Earn position tidak ditemukan.",
+      });
+    }
+
+    if (position.status === "CLAIMED") {
+      return res.status(200).json({
+        success: true,
+        message: "Earn sudah di-claim.",
+        data: {
+          id: position.id,
+          core_id: position.coreId,
+          position_id: position.positionId,
+          status: position.status,
+          tx_hash: position.txHash,
+        },
+      });
+    }
+
+    if (position) {
+      try {
+        if (position.status === EARN_STATUS.CLAIMING) {
+          await position.update({
+            status: EARN_STATUS.ACTIVE,
+          });
+        }
+      } catch (dbError) {
+        console.error("[Earn Claim Worker] Gagal recovery status:", dbError);
+      }
+    }
+
+    if (!position.positionId) {
+      return res.status(400).json({
+        success: false,
+        message: "Blockchain position_id belum tersedia.",
+      });
+    }
+
+    if (!position.maturityAt) {
+      return res.status(400).json({
+        success: false,
+        message: "Maturity position belum tersedia.",
+      });
+    }
+
+    const maturityAt = new Date(position.maturityAt);
+
+    if (Number.isNaN(maturityAt.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "maturity_at tidak valid.",
+      });
+    }
+
+    if (Date.now() < maturityAt.getTime()) {
+      return res.status(400).json({
+        success: false,
+        message: "Earn belum mencapai maturity.",
+        data: {
+          maturity_at: position.maturityAt,
+        },
+      });
+    }
+
+    // =====================================================
+    // JOB ID
+    // =====================================================
+
+    const jobId = `claim-${position.id}`;
+
+    // =====================================================
+    // ADD QUEUE
+    // =====================================================
+
+    const job = await earnClaimQueue.add(
+      "process-claim",
+      {
+        positionId: position.id,
+
+        coreId: position.coreId,
+      },
+      {
+        jobId,
+
+        removeOnComplete: true,
+
+        removeOnFail: false,
+      },
+    );
+
+    console.log("[Earn Claim] Job queued:", {
+      jobId: job.id,
+      positionId: position.id,
+    });
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    return res.status(202).json({
+      success: true,
+
+      message: "Claim sedang diproses.",
+
+      data: {
+        id: position.id,
+
+        core_id: position.coreId,
+
+        position_id: position.positionId,
+
+        status: position.status,
+
+        maturity_at: position.maturityAt,
+
+        job_id: job.id,
+      },
+    });
+  } catch (error) {
+    console.error("[Earn] claim error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: formatEarnError(error),
+    });
+  }
+};
+
+module.exports = {
+  getUserEarnPositions,
+  recordEarnPosition,
+  claimEarnPosition,
+};
