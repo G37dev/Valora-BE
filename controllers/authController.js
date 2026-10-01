@@ -1,6 +1,6 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const { authenticator } = require("@otplib/preset-v11");
+const { authenticator } = require("otplib");
 const { createClient } = require("@supabase/supabase-js");
 
 const {
