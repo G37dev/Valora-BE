@@ -1,7 +1,7 @@
 const { Worker } = require("bullmq");
 
 const { EarnPosition, Wallet } = require("../models");
-
+const Redis = require("ioredis");
 const {
   getAssetTokenAddress,
   getUserSmartAccount,
@@ -25,11 +25,9 @@ const { waitForReceipt } = require("thirdweb");
 
 const { sepolia } = require("thirdweb/chains");
 
-const connection = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6379),
-};
-
+const connection = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+});
 const earnClaimWorker = new Worker(
   "earn-claim",
 
