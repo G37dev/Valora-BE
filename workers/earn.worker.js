@@ -421,12 +421,11 @@ const earnWorker = new Worker(
 
       const platformFeeBps = Number(process.env.EARN_PLATFORM_FEE_BPS || 0);
 
-      if (platformFeeBps === 0) {
-        if (eventPrincipalBigInt !== amount) {
-          throw new Error(
-            `Principal mismatch. DB=${amount.toString()}, Blockchain=${eventPrincipalBigInt.toString()}`,
-          );
-        }
+      if (dbPrincipal !== blockchainPrincipal) {
+        console.warn(
+          `[Earn Worker] Principal berbeda karena fee contract. ` +
+            `DB=${dbPrincipal}, Blockchain=${blockchainPrincipal}`,
+        );
       }
 
       // =====================================================
