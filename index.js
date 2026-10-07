@@ -15,7 +15,7 @@ const earnRoutes = require("./routes/earnRoutes");
 const topupRoutes = require("./routes/topupRoutes");
 const priceRoutes = require("./routes/priceRoutes");
 const internalWalletRoutes = require("./routes/internalWalletRoutes");
-
+const swapRoutes = require("./routes/swapRoutes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
@@ -78,6 +78,7 @@ app.use("/api/prices", priceRoutes);
 app.use("/api/internal-wallet", internalWalletRoutes);
 app.use("/api/earn", earnRoutes);
 app.use("/api/topups", topupRoutes);
+app.use("/api/swap", swapRoutes);
 
 // ===============================
 // MIDTRANS REDIRECT
@@ -106,6 +107,12 @@ if (require.main === module) {
     try {
       await sequelize.authenticate();
       console.log("PostgreSQL connected.");
+
+      // await sequelize.sync({ alter: true });
+      // console.log("Database tables synced.");
+
+      await sequelize.sync();
+      console.log("Database tables synced.");
     } catch (error) {
       console.error("Database connection failed:", error);
     }

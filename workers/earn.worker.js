@@ -421,11 +421,22 @@ const earnWorker = new Worker(
 
       const platformFeeBps = Number(process.env.EARN_PLATFORM_FEE_BPS || 0);
 
+      const dbPrincipal = BigInt(position.principal);
+      const blockchainPrincipal = BigInt(event.args.principal);
+
+      console.log("[Earn Worker] Principal comparison:", {
+        database: dbPrincipal.toString(),
+        blockchain: blockchainPrincipal.toString(),
+      });
+
       if (dbPrincipal !== blockchainPrincipal) {
-        console.warn(
-          `[Earn Worker] Principal berbeda karena fee contract. ` +
-            `DB=${dbPrincipal}, Blockchain=${blockchainPrincipal}`,
-        );
+        const fee = dbPrincipal - blockchainPrincipal;
+
+        console.warn("[Earn Worker] Principal berbeda karena fee contract:", {
+          database: dbPrincipal.toString(),
+          blockchain: blockchainPrincipal.toString(),
+          fee: fee.toString(),
+        });
       }
 
       // =====================================================

@@ -5,22 +5,11 @@ const { sequelize } = require("./models");
 const { startBlockchainListener } = require("./services/blockchainListener");
 const { startEarnListener } = require("./services/earnListener");
 
-// ===============================
-// START BULLMQ WORKERS
-// ===============================
-
 require("./workers/earn.worker");
 require("./workers/earn-claim.worker");
-
-// ===============================
-// START PRICE SCHEDULER
-// ===============================
+require("./workers/swap.worker");
 
 require("./services/priceScheduler");
-
-// ===============================
-// START WORKER PROCESS
-// ===============================
 
 async function startWorker() {
   try {
@@ -36,10 +25,10 @@ async function startWorker() {
     console.log("Blockchain listener started.");
     console.log("Earn listener started.");
     console.log("Earn workers started.");
+    console.log("Swap worker started.");
     console.log("Price scheduler started.");
   } catch (error) {
     console.error("Worker startup failed:", error);
-
     process.exit(1);
   }
 }

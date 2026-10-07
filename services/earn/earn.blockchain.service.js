@@ -2,6 +2,11 @@ const { createThirdwebClient, getContract, readContract } = require("thirdweb");
 
 const { privateKeyAccount, smartWallet } = require("thirdweb/wallets");
 
+const {
+  getPaymasterAndData,
+  ENTRYPOINT_ADDRESS_v0_7,
+} = require("thirdweb/wallets/smart");
+
 const { sepolia } = require("thirdweb/chains");
 
 const { isValidAddress, normalizeAsset } = require("./earn.validation");
@@ -136,6 +141,82 @@ const getTokenAllowance = async ({ tokenAddress, owner, spender }) => {
   return BigInt(allowance);
 };
 
+/**
+ * Minimum callGasLimit untuk sponsored UserOp.
+ *
+ * Estimasi gas dari bundler/paymaster thirdweb kadang underestimate
+ * untuk call yang banyak cold SSTORE (createEarn butuh ~390k, sempat
+ * diestimasi 170k dan revert OOG di dalam UserOp).
+ *
+ * Di thirdweb@5.x jalur sponsorGas selalu menimpa callGasLimit dengan
+ * hasil paymaster/bundler, dan field gas ikut ditandatangani paymaster
+ * — jadi nilai tidak bisa diubah setelah pm_sponsorUserOperation.
+ *
+ * Workaround: double-call. Call pertama dapatkan paymasterData; call
+ * kedua kirim op yang sudah berisi paymasterData + callGasLimit target
+ * — dalam kondisi itu paymaster menandatangani nilai yang direquest.
+ */
+const MIN_CALL_GAS_LIMIT = BigInt(
+  process.env.AA_MIN_CALL_GAS_LIMIT || "500000",
+);
+
+const sponsoredPaymaster = async (userOp) => {
+  // UserOp v0.7 pakai field factoryData/paymasterData terpisah; v0.6 pakai initCode/paymasterAndData
+  const isV07 =
+    userOp.factory !== undefined ||
+    userOp.factoryData !== undefined ||
+    userOp.paymaster !== undefined ||
+    userOp.paymasterData !== undefined;
+
+  const entrypointAddress = isV07
+    ? ENTRYPOINT_ADDRESS_v0_7
+    : "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
+
+  const pmCall = (op) =>
+    getPaymasterAndData({
+      userOp: op,
+      client,
+      chain: sepolia,
+      entrypointAddress,
+    });
+
+  const r1 = await pmCall(userOp);
+
+  if (!r1?.paymaster && !r1?.paymasterAndData) {
+    return r1;
+  }
+
+  // callGasLimit awal = estimasi lokal prepareContractCall (tx.gas)
+  const requested = BigInt(userOp.callGasLimit ?? 0n);
+  const targetCallGas =
+    requested * 2n > MIN_CALL_GAS_LIMIT ? requested * 2n : MIN_CALL_GAS_LIMIT;
+
+  const signedOp = { ...userOp, callGasLimit: targetCallGas };
+  if (isV07) {
+    signedOp.paymaster = r1.paymaster;
+    signedOp.paymasterData = r1.paymasterData;
+  } else {
+    signedOp.paymasterAndData = r1.paymasterAndData;
+  }
+  for (const key of [
+    "verificationGasLimit",
+    "preVerificationGas",
+    "paymasterVerificationGasLimit",
+    "paymasterPostOpGasLimit",
+  ]) {
+    if (r1[key] !== undefined) signedOp[key] = r1[key];
+  }
+
+  const r2 = await pmCall(signedOp);
+
+  console.log("[AA PM] callGasLimit:", {
+    pmEstimate: r1.callGasLimit?.toString(),
+    final: r2.callGasLimit?.toString(),
+  });
+
+  return r2;
+};
+
 const getUserSmartAccount = async (userWallet, coreId) => {
   if (!userWallet?.address) {
     throw new Error("Smart Wallet user tidak ditemukan.");
@@ -150,6 +231,7 @@ const getUserSmartAccount = async (userWallet, coreId) => {
     overrides: {
       accountAddress: userWallet.address,
       accountSalt: String(coreId),
+      paymaster: sponsoredPaymaster,
     },
   });
 

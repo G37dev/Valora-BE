@@ -19,16 +19,27 @@ const InternalTransaction = sequelize.define(
     /**
      * Satu TopUp hanya boleh menghasilkan
      * satu InternalTransaction.
-     *
-     * NULL tetap diperbolehkan untuk transaksi
-     * lain seperti adjustment/withdraw yang
-     * tidak berasal dari TopUp.
      */
     topUpId: {
       type: DataTypes.UUID,
       allowNull: true,
       unique: true,
       field: "topup_id",
+    },
+
+    /**
+     * Satu Swap bisa memiliki lebih dari
+     * satu InternalTransaction.
+     *
+     * Contoh:
+     * - SWAP_DEBIT
+     * - SWAP_CREDIT
+     * - SWAP_REFUND
+     */
+    swapId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: "swap_id",
     },
 
     coreId: {
@@ -66,10 +77,11 @@ const InternalTransaction = sequelize.define(
     },
 
     /**
-     * Reference bisnis yang immutable.
+     * Reference bisnis immutable.
      *
      * Contoh:
      * TOPUP-550e8400-e29b-41d4-a716-446655440000
+     * SWAP-DEBIT-550e8400-e29b-41d4-a716-446655440000
      */
     reference: {
       type: DataTypes.STRING,
@@ -105,19 +117,18 @@ const InternalTransaction = sequelize.define(
       {
         fields: ["internal_wallet_id"],
       },
-
       {
         fields: ["core_id"],
       },
-
       {
         fields: ["topup_id"],
       },
-
+      {
+        fields: ["swap_id"],
+      },
       {
         fields: ["type"],
       },
-
       {
         fields: ["status"],
       },

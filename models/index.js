@@ -15,6 +15,11 @@ const TopUp = require("./TopUp");
 const Passkey = require("./Passkey");
 const EarnPosition = require("./EarnPosition");
 
+// Swap
+const Swap = require("./Swap");
+const SwapRefund = require("./SwapRefund");
+const SwapEvent = require("./SwapEvent");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -164,10 +169,103 @@ InternalTransaction.belongsTo(TopUp, {
 });
 
 // ==========================================
+// Customer & Swap
+// ==========================================
+
+Customer.hasMany(Swap, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "swaps",
+});
+
+Swap.belongsTo(Customer, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "customer",
+});
+
+// ==========================================
+// Swap & Internal Transactions
+// ==========================================
+
+Swap.hasMany(InternalTransaction, {
+  foreignKey: "swapId",
+  as: "internalTransactions",
+});
+
+InternalTransaction.belongsTo(Swap, {
+  foreignKey: "swapId",
+  as: "swap",
+});
+
+// ==========================================
+// Swap & Refunds
+// ==========================================
+
+Swap.hasMany(SwapRefund, {
+  foreignKey: "swapId",
+  as: "refunds",
+});
+
+SwapRefund.belongsTo(Swap, {
+  foreignKey: "swapId",
+  as: "swap",
+});
+
+// ==========================================
+// Swap & Events
+// ==========================================
+
+Swap.hasMany(SwapEvent, {
+  foreignKey: "swapId",
+  as: "events",
+});
+
+SwapEvent.belongsTo(Swap, {
+  foreignKey: "swapId",
+  as: "swap",
+});
+
+// ==========================================
+// Customer & Swap Refund
+// ==========================================
+
+Customer.hasMany(SwapRefund, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "swapRefunds",
+});
+
+SwapRefund.belongsTo(Customer, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "customer",
+});
+
+// ==========================================
+// Customer & Swap Events
+// ==========================================
+
+Customer.hasMany(SwapEvent, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "swapEvents",
+});
+
+SwapEvent.belongsTo(Customer, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "customer",
+});
+
+// ==========================================
+// Exports
+// ==========================================
 
 module.exports = {
   sequelize,
 
+  // Core
   Customer,
   User,
   AuthIdentity,
@@ -175,15 +273,28 @@ module.exports = {
   PartnerIdentityLink,
   KycProfile,
 
+  // Wallet
   Wallet,
-  Transaction,
-
-  Price,
-
   InternalWallet,
+
+  // Transactions
+  Transaction,
   InternalTransaction,
+
+  // Payments
   TopUp,
 
+  // Pricing
+  Price,
+
+  // Authentication
   Passkey,
+
+  // Earn
   EarnPosition,
+
+  // Swap
+  Swap,
+  SwapRefund,
+  SwapEvent,
 };
