@@ -1,0 +1,673 @@
+const {
+  sequelize,
+  Price,
+  InstallmentPlan,
+  InstallmentSchedule,
+  InstallmentPayment,
+  InstallmentEvent,
+} = require("../../models");
+const calc = require("./installment.calc");
+const cal = require("./installment.calendar");
+const engine = require("./installment.engine");
+const ledger = require("./installment.ledger");
+const v = require("./installment.validation");
+const { InstallmentError, toJsonSafe } = require("./installment.errors");
+const {
+  RULES_VERSION,
+  PLAN_TYPE,
+  STATUS,
+  RULES,
+  EVENT,
+  PAYMENT_KIND,
+  TERMINAL_STATUSES,
+} = require("./installment.constants");
+
+const MAX_PRICE_AGE_MS = Number(
+  process.env.INSTALLMENT_MAX_PRICE_AGE_MS ?? 10 * 60 * 1000,
+);
+
+// ============================================================
+// Helpers
+// ============================================================
+
+/**
+ * Jalankan fn dalam transaction baru, atau SAVEPOINT di dalam transaction
+ * yang diberikan (sehingga kegagalan fn hanya me-rollback bagian fn).
+ */
+function withTransaction(transaction, fn) {
+  return transaction
+    ? sequelize.transaction({ transaction }, fn)
+    : sequelize.transaction(fn);
+}
+
+async function lockPrice(asset) {
+  const row = await Price.findOne({ where: { asset } });
+  if (!row) {
+    throw new InstallmentError(`Harga ${asset} belum tersedia`, {
+      status: 503,
+      code: "PRICE_UNAVAILABLE",
+    });
+  }
+  const ageMs = Date.now() - new Date(row.updatedAt).getTime();
+  if (MAX_PRICE_AGE_MS > 0 && ageMs > MAX_PRICE_AGE_MS) {
+    throw new InstallmentError(`Harga ${asset} sudah kedaluwarsa, coba lagi`, {
+      status: 503,
+      code: "PRICE_STALE",
+      details: { age_ms: ageMs },
+    });
+  }
+  return {
+    priceIdr: String(row.priceIdr),
+    source: row.source,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function parseQuoteInput(body, requestAt) {
+  const planType = v.parsePlanType(body.plan_type);
+  const asset = v.normalizeAsset(body.asset);
+  const tenorMonths = v.parseTenor(body.tenor_months);
+  const goldAmount = v.parseGoldAmount(body.gold_amount);
+
+  if (planType === PLAN_TYPE.STANDARD) {
+    return {
+      planType,
+      asset,
+      tenorMonths,
+      goldAmount,
+      installmentGap: v.parseGap(body.installment_gap),
+      requestAt,
+    };
+  }
+  return {
+    planType,
+    asset,
+    tenorMonths,
+    goldAmount,
+    dpBps: v.parseDpBps(body),
+    requestAt,
+  };
+}
+
+function buildQuote(input, lockedPriceIdr) {
+  if (input.planType === PLAN_TYPE.STANDARD) {
+    return calc.standardQuote({ ...input, lockedPriceIdr });
+  }
+  return calc.flexibleQuote({ ...input, lockedPriceIdr });
+}
+
+async function lockPlan(planId, coreId, transaction) {
+  const plan = await InstallmentPlan.findOne({
+    where: { id: planId, coreId },
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+  if (!plan) {
+    throw new InstallmentError("Plan tidak ditemukan", {
+      status: 404,
+      code: "PLAN_NOT_FOUND",
+    });
+  }
+  return plan;
+}
+
+// ============================================================
+// Quote
+// ============================================================
+
+async function quote(body, { now = new Date() } = {}) {
+  const input = parseQuoteInput(body, now);
+  const price = await lockPrice(input.asset);
+  const q = buildQuote(input, price.priceIdr);
+  return toJsonSafe({
+    ...q,
+    price_source: price.source,
+    price_updated_at: price.updatedAt,
+    request_window_hours: RULES.REQUEST_WINDOW_HOURS,
+    rules_version: RULES_VERSION,
+  });
+}
+
+// ============================================================
+// Create request (price lock)
+// ============================================================
+
+async function findExistingPlan(idempotencyKey, coreId, transaction) {
+  const existing = await InstallmentPlan.findOne({
+    where: { idempotencyKey },
+    transaction,
+  });
+  if (existing && existing.coreId !== coreId) {
+    throw new InstallmentError("idempotency_key sudah dipakai", {
+      status: 409,
+      code: "IDEMPOTENCY_CONFLICT",
+    });
+  }
+  return existing;
+}
+
+async function createRequest({
+  coreId,
+  body,
+  now = new Date(),
+  isTest = false,
+  transaction,
+}) {
+  const idempotencyKey = v.requireIdempotencyKey(body.idempotency_key);
+
+  const existing = await findExistingPlan(idempotencyKey, coreId, transaction);
+  if (existing) return { plan: existing, created: false };
+
+  const input = parseQuoteInput(body, now);
+  const price = await lockPrice(input.asset);
+  const q = buildQuote(input, price.priceIdr);
+
+  if (input.planType === PLAN_TYPE.STANDARD && !q.meetsMinimum) {
+    throw new InstallmentError(
+      `Setiap installment harus >= ${RULES.MIN_INSTALLMENT_IDR.toString()} IDR. Minimum gold_amount: ${q.minGoldAmount} gram`,
+      {
+        code: "BELOW_MINIMUM_INSTALLMENT",
+        details: {
+          min_gold_amount: q.minGoldAmount,
+          installments: q.installments,
+        },
+      },
+    );
+  }
+
+  const isStandard = input.planType === PLAN_TYPE.STANDARD;
+  const protocolFee = calc.protocolFee(q.assetValue);
+
+  let plan;
+  try {
+    plan = await withTransaction(transaction, async (t) => {
+      const created = await InstallmentPlan.create(
+        {
+          coreId,
+          planType: input.planType,
+          assetCode: input.asset,
+          goldAmount: input.goldAmount,
+          lockedPriceIdr: price.priceIdr,
+          priceSource: price.source,
+          assetValueIdr: q.assetValue.toString(),
+          tenorMonths: input.tenorMonths,
+          installmentGap: isStandard ? input.installmentGap : null,
+          markupBps: isStandard ? q.markupBps : null,
+          scheduleCount: isStandard ? q.scheduleCount : null,
+          standardTotalPaymentIdr: isStandard
+            ? q.totalPayment.toString()
+            : null,
+          priceLockMarginBps: isStandard ? null : q.priceLockMarginBps,
+          lockedPlanValueIdr: isStandard ? null : q.lockedPlanValue.toString(),
+          dpBps: isStandard ? null : q.dpBps,
+          initialPaymentIdr: q.initialPayment.toString(),
+          principalOutstandingIdr: (isStandard
+            ? q.totalPayment
+            : q.lockedPlanValue
+          ).toString(),
+          protocolFeeBps: RULES.PROTOCOL_FEE_BPS,
+          protocolFeeIdr: protocolFee.toString(),
+          status: STATUS.REQUEST_CREATED,
+          requestCreatedAt: now,
+          requestExpiresAt: cal.addHours(now, RULES.REQUEST_WINDOW_HOURS),
+          nextEventAt: cal.addHours(now, RULES.REQUEST_WINDOW_HOURS),
+          settledThroughAt: now,
+          idempotencyKey,
+          rulesVersion: RULES_VERSION,
+          isTest,
+          calculationSnapshot: toJsonSafe({
+            quote: q,
+            price_source: price.source,
+            price_updated_at: price.updatedAt,
+            effective_at: now,
+            rules_version: RULES_VERSION,
+          }),
+        },
+        { transaction: t },
+      );
+
+      await ledger.recordEvent(
+        created,
+        {
+          eventType: EVENT.REQUEST_CREATED,
+          effectiveAt: now,
+          metadata: { quote: q, expires_at: created.requestExpiresAt },
+        },
+        t,
+      );
+
+      return created;
+    });
+  } catch (error) {
+    // Race: request paralel dengan idempotency_key sama -> kembalikan yang menang
+    if (error?.name === "SequelizeUniqueConstraintError" && !transaction) {
+      const winner = await findExistingPlan(idempotencyKey, coreId);
+      if (winner) return { plan: winner, created: false };
+    }
+    throw error;
+  }
+
+  return { plan, created: true };
+}
+
+// ============================================================
+// Pay (activation / payment / settlement)
+// ============================================================
+
+async function pay({ coreId, planId, body, now = new Date(), transaction }) {
+  const idempotencyKey = v.requireIdempotencyKey(body.idempotency_key);
+  const requested = v.parseIdrAmount(body.amount_idr);
+
+  await settlePlan(planId, now, transaction);
+
+  return withTransaction(transaction, async (t) => {
+    // Lock plan dulu -> pembayaran paralel untuk plan yang sama diserialisasi,
+    // sehingga cek idempotency di bawah ini bebas race.
+    const plan = await lockPlan(planId, coreId, t);
+
+    const duplicate = await InstallmentPayment.findOne({
+      where: { idempotencyKey },
+      transaction: t,
+    });
+    if (duplicate) {
+      if (duplicate.coreId !== coreId || duplicate.planId !== planId) {
+        throw new InstallmentError("idempotency_key sudah dipakai", {
+          status: 409,
+          code: "IDEMPOTENCY_CONFLICT",
+        });
+      }
+      return { plan, payment: duplicate, duplicate: true, excess: 0n };
+    }
+
+    const s = engine.loadState(plan);
+    const schedules = await engine.loadSchedules(plan, t);
+
+    await engine.settleToNow(plan, s, schedules, now, t);
+
+    if (
+      TERMINAL_STATUSES.includes(plan.status) ||
+      plan.status === STATUS.REQUEST_EXPIRED
+    ) {
+      throw new InstallmentError(`Plan sudah ${plan.status}`, {
+        status: 409,
+        code: "INVALID_STATE",
+      });
+    }
+
+    const statusBefore = plan.status;
+    let result;
+    let kind;
+    if (plan.status === STATUS.REQUEST_CREATED) {
+      result = await engine.activate(plan, s, schedules, requested, now, t);
+      kind = PAYMENT_KIND.INITIAL;
+    } else {
+      result = await engine.applyPayment(plan, s, schedules, requested, now, t);
+      kind = result.kind;
+    }
+
+    const reference = `INSTALLMENT-PAY-${plan.id}-${idempotencyKey}`;
+    const debit = await ledger.debitWallet(
+      {
+        coreId,
+        amount: result.applied,
+        reference,
+        description: `Gold Installment ${plan.planType} ${plan.assetCode} (${kind})`,
+        metadata: { planId: plan.id, kind, allocation: result.allocation },
+      },
+      t,
+    );
+
+    const payment = await InstallmentPayment.create(
+      {
+        planId: plan.id,
+        coreId,
+        kind,
+        requestedAmountIdr: requested.toString(),
+        amountIdr: result.applied.toString(),
+        effectiveAt: now,
+        allocation: toJsonSafe(result.allocation),
+        statusBefore,
+        statusAfter: plan.status,
+        internalTransactionId: debit.id,
+        reference,
+        idempotencyKey,
+        calculationSnapshot: toJsonSafe(
+          engine.buildSnapshot(plan, s, { effective_at: now }),
+        ),
+      },
+      { transaction: t },
+    );
+
+    await ledger.recordEvent(
+      plan,
+      {
+        eventType: EVENT.PAYMENT_APPLIED,
+        effectiveAt: now,
+        metadata: {
+          payment_id: payment.id,
+          kind,
+          requested: requested,
+          applied: result.applied,
+          excess_not_debited: requested - result.applied,
+          allocation: result.allocation,
+          status_before: statusBefore,
+          status_after: plan.status,
+        },
+      },
+      t,
+    );
+
+    await engine.persist(plan, s, schedules, now, t);
+
+    return {
+      plan,
+      payment,
+      duplicate: false,
+      excess: requested - result.applied,
+    };
+  });
+}
+
+// ============================================================
+// Cancel / Restructure
+// ============================================================
+
+async function cancel({ coreId, planId, now = new Date(), transaction }) {
+  await settlePlan(planId, now, transaction);
+
+  return withTransaction(transaction, async (t) => {
+    const plan = await lockPlan(planId, coreId, t);
+    const s = engine.loadState(plan);
+    const schedules = await engine.loadSchedules(plan, t);
+
+    await engine.settleToNow(plan, s, schedules, now, t);
+    const result = await engine.cancel(plan, s, now, t);
+    await engine.persist(plan, s, schedules, now, t);
+
+    return { plan, result };
+  });
+}
+
+async function restructure({ coreId, planId, now = new Date(), transaction }) {
+  await settlePlan(planId, now, transaction);
+
+  return withTransaction(transaction, async (t) => {
+    const plan = await lockPlan(planId, coreId, t);
+    const s = engine.loadState(plan);
+    const schedules = await engine.loadSchedules(plan, t);
+
+    await engine.settleToNow(plan, s, schedules, now, t);
+    const result = await engine.restructure(plan, s, now, t);
+    await engine.persist(plan, s, schedules, now, t);
+
+    return { plan, result };
+  });
+}
+
+// ============================================================
+// Scheduler entry point
+// ============================================================
+
+/**
+ * Settle satu plan sampai `now` dalam transaction/savepoint tersendiri.
+ * Dipanggil scheduler, read-side, dan SEBELUM setiap aksi user supaya
+ * transisi waktu tetap durable walaupun aksinya ditolak.
+ */
+async function settlePlan(planId, now = new Date(), transaction) {
+  return withTransaction(transaction, async (t) => {
+    const plan = await InstallmentPlan.findByPk(planId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!plan || TERMINAL_STATUSES.includes(plan.status)) return plan;
+
+    const s = engine.loadState(plan);
+    const schedules = await engine.loadSchedules(plan, t);
+    await engine.settleToNow(plan, s, schedules, now, t);
+    await engine.persist(plan, s, schedules, now, t);
+    return plan;
+  });
+}
+
+// ============================================================
+// Read side
+// ============================================================
+
+function serializeSchedule(item) {
+  return toJsonSafe({
+    sequence: item.sequence,
+    due_at: item.dueAt,
+    amount_idr: item.amountIdr,
+    paid_idr: item.paidIdr,
+    remaining_idr: calc.big(item.amountIdr) - calc.big(item.paidIdr),
+    late_penalty_charged_idr: item.latePenaltyChargedIdr,
+    status: item.status,
+    paid_at: item.paidAt,
+  });
+}
+
+function serializePayment(p) {
+  return toJsonSafe({
+    id: p.id,
+    kind: p.kind,
+    requested_amount_idr: p.requestedAmountIdr,
+    amount_idr: p.amountIdr,
+    effective_at: p.effectiveAt,
+    allocation: p.allocation,
+    status_before: p.statusBefore,
+    status_after: p.statusAfter,
+    reference: p.reference,
+    created_at: p.createdAt,
+  });
+}
+
+function serializeEvent(e) {
+  return toJsonSafe({
+    id: e.id,
+    event_type: e.eventType,
+    effective_at: e.effectiveAt,
+    rev_id: e.revId,
+    revenue_event_id: e.revenueEventId,
+    amount_idr: e.amountIdr,
+    rate_bps: e.rateBps,
+    calculation_base_idr: e.calculationBaseIdr,
+    metadata: e.metadata,
+  });
+}
+
+/**
+ * Serialisasi plan untuk UI. `at` dipakai untuk eligibility flags;
+ * nilai finansial adalah nilai tersimpan (sudah settled sampai settled_through_at).
+ */
+function serializePlan(
+  plan,
+  { schedules = null, payments = null, events = null, at = new Date() } = {},
+) {
+  const s = engine.loadState(plan);
+  const flex = engine.isFlexible(plan);
+
+  return toJsonSafe({
+    id: plan.id,
+    core_id: plan.coreId,
+    plan_type: plan.planType,
+    asset: plan.assetCode,
+    gold_amount: plan.goldAmount,
+    locked_price_idr: plan.lockedPriceIdr,
+    price_source: plan.priceSource,
+    asset_value_idr: plan.assetValueIdr,
+    tenor_months: plan.tenorMonths,
+    status: plan.status,
+    rules_version: plan.rulesVersion,
+    is_test: plan.isTest,
+
+    standard: flex
+      ? null
+      : {
+          installment_gap: plan.installmentGap,
+          markup_bps: plan.markupBps,
+          schedule_count: plan.scheduleCount,
+          total_payment_idr: plan.standardTotalPaymentIdr,
+          eligible_paid_idr: s.sepa,
+          late_penalty_idr: s.lp,
+          late_penalty_paid_idr: s.lpPaid,
+        },
+
+    flexible: flex
+      ? {
+          price_lock_margin_bps: plan.priceLockMarginBps,
+          locked_plan_value_idr: plan.lockedPlanValueIdr,
+          dp_bps: plan.dpBps,
+          eligible_plan_payment_idr: s.epp,
+          accrued_carrying_idr: s.ac,
+          carrying_paid_idr: s.acPaid,
+          next_carrying_at: plan.nextCarryingAt,
+        }
+      : null,
+
+    balances: {
+      initial_payment_idr: plan.initialPaymentIdr,
+      principal_outstanding_idr: s.po,
+      past_due_penalty_idr: s.pdp,
+      past_due_penalty_paid_idr: s.pdpPaid,
+      restructure_fee_idr: s.rf,
+      restructure_fee_paid_idr: s.rfPaid,
+      total_obligation_idr: engine.totalObligation(s),
+      gross_cash_paid_idr: s.gross,
+      payment_completion_bps: engine.completionBps(plan, s),
+      actual_cost_idr: s.actualCost,
+    },
+
+    settlement: {
+      cancellation_rate_bps: plan.cancellationRateBps,
+      cancellation_compensation_idr: plan.cancellationCompensationIdr,
+      alc_rate_bps: plan.alcRateBps,
+      alc_amount_idr: plan.alcAmountIdr,
+      raw_refund_idr: plan.rawRefundIdr,
+      final_refund_idr: plan.finalRefundIdr,
+    },
+
+    claim: {
+      protocol_fee_bps: plan.protocolFeeBps,
+      protocol_fee_idr: plan.protocolFeeIdr,
+      protocol_fee_status: plan.protocolFeeStatus,
+      claim_network_fee_idr: plan.claimNetworkFeeIdr,
+      release_tx_hash: plan.releaseTxHash,
+    },
+
+    timeline: {
+      request_created_at: plan.requestCreatedAt,
+      request_expires_at: plan.requestExpiresAt,
+      activated_at: plan.activatedAt,
+      maturity_at: plan.maturityAt,
+      cancellation_closed_at: plan.cancellationClosedAt,
+      past_due_at: plan.pastDueAt,
+      cure_ends_at: plan.cureEndsAt,
+      restructure_started_at: plan.restructureStartedAt,
+      restructure_maturity_at: plan.restructureMaturityAt,
+      restructure_extension_months: plan.restructureExtensionMonths,
+      fully_settled_at: plan.fullySettledAt,
+      claimable_at: plan.claimableAt,
+      closed_at: plan.closedAt,
+      next_event_at: plan.nextEventAt,
+      settled_through_at: plan.settledThroughAt,
+    },
+
+    eligibility: engine.eligibility(plan, s, at),
+
+    schedules: schedules ? schedules.map(serializeSchedule) : undefined,
+    payments: payments ? payments.map(serializePayment) : undefined,
+    events: events ? events.map(serializeEvent) : undefined,
+
+    created_at: plan.createdAt,
+    updated_at: plan.updatedAt,
+  });
+}
+
+async function listPlans({
+  coreId,
+  status,
+  includeTest = false,
+  now = new Date(),
+}) {
+  const where = { coreId };
+  if (status) where.status = String(status).toUpperCase();
+  if (!includeTest) where.isTest = false;
+
+  const plans = await InstallmentPlan.findAll({
+    where,
+    order: [["created_at", "DESC"]],
+  });
+
+  // Settle plan yang punya event terlewat agar angka yang ditampilkan up-to-date
+  const stale = plans.filter(
+    (p) =>
+      p.nextEventAt &&
+      new Date(p.nextEventAt) <= now &&
+      !TERMINAL_STATUSES.includes(p.status),
+  );
+  for (const p of stale) {
+    try {
+      await settlePlan(p.id, now);
+    } catch (error) {
+      console.error(`[Installment] settlePlan ${p.id} gagal:`, error.message);
+    }
+  }
+
+  const fresh = stale.length
+    ? await InstallmentPlan.findAll({ where, order: [["created_at", "DESC"]] })
+    : plans;
+
+  return fresh.map((p) => serializePlan(p, { at: now }));
+}
+
+async function getPlanDetail({ coreId, planId, now = new Date() }) {
+  let plan = await InstallmentPlan.findOne({ where: { id: planId, coreId } });
+  if (!plan) {
+    throw new InstallmentError("Plan tidak ditemukan", {
+      status: 404,
+      code: "PLAN_NOT_FOUND",
+    });
+  }
+
+  if (
+    plan.nextEventAt &&
+    new Date(plan.nextEventAt) <= now &&
+    !TERMINAL_STATUSES.includes(plan.status)
+  ) {
+    plan = await settlePlan(plan.id, now);
+  }
+
+  const [schedules, payments, events] = await Promise.all([
+    engine.isFlexible(plan)
+      ? []
+      : InstallmentSchedule.findAll({
+          where: { planId },
+          order: [["sequence", "ASC"]],
+        }),
+    InstallmentPayment.findAll({
+      where: { planId },
+      order: [["effective_at", "ASC"]],
+    }),
+    InstallmentEvent.findAll({
+      where: { planId },
+      order: [
+        ["effective_at", "ASC"],
+        ["created_at", "ASC"],
+      ],
+    }),
+  ]);
+
+  return serializePlan(plan, { schedules, payments, events, at: now });
+}
+
+module.exports = {
+  quote,
+  createRequest,
+  pay,
+  cancel,
+  restructure,
+  settlePlan,
+  listPlans,
+  getPlanDetail,
+  serializePlan,
+};

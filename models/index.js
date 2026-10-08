@@ -20,6 +20,12 @@ const Swap = require("./Swap");
 const SwapRefund = require("./SwapRefund");
 const SwapEvent = require("./SwapEvent");
 
+// Gold Installment
+const InstallmentPlan = require("./InstallmentPlan");
+const InstallmentSchedule = require("./InstallmentSchedule");
+const InstallmentPayment = require("./InstallmentPayment");
+const InstallmentEvent = require("./InstallmentEvent");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -259,6 +265,52 @@ SwapEvent.belongsTo(Customer, {
 });
 
 // ==========================================
+// Gold Installment
+// ==========================================
+
+Customer.hasMany(InstallmentPlan, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "installmentPlans",
+});
+
+InstallmentPlan.belongsTo(Customer, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "customer",
+});
+
+InstallmentPlan.hasMany(InstallmentSchedule, {
+  foreignKey: "planId",
+  as: "schedules",
+});
+
+InstallmentSchedule.belongsTo(InstallmentPlan, {
+  foreignKey: "planId",
+  as: "plan",
+});
+
+InstallmentPlan.hasMany(InstallmentPayment, {
+  foreignKey: "planId",
+  as: "payments",
+});
+
+InstallmentPayment.belongsTo(InstallmentPlan, {
+  foreignKey: "planId",
+  as: "plan",
+});
+
+InstallmentPlan.hasMany(InstallmentEvent, {
+  foreignKey: "planId",
+  as: "events",
+});
+
+InstallmentEvent.belongsTo(InstallmentPlan, {
+  foreignKey: "planId",
+  as: "plan",
+});
+
+// ==========================================
 // Exports
 // ==========================================
 
@@ -297,4 +349,10 @@ module.exports = {
   Swap,
   SwapRefund,
   SwapEvent,
+
+  // Gold Installment
+  InstallmentPlan,
+  InstallmentSchedule,
+  InstallmentPayment,
+  InstallmentEvent,
 };

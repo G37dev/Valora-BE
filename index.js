@@ -16,6 +16,7 @@ const topupRoutes = require("./routes/topupRoutes");
 const priceRoutes = require("./routes/priceRoutes");
 const internalWalletRoutes = require("./routes/internalWalletRoutes");
 const swapRoutes = require("./routes/swapRoutes");
+const installmentRoutes = require("./routes/installmentRoutes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
@@ -79,6 +80,7 @@ app.use("/api/internal-wallet", internalWalletRoutes);
 app.use("/api/earn", earnRoutes);
 app.use("/api/topups", topupRoutes);
 app.use("/api/swap", swapRoutes);
+app.use("/api/installments", installmentRoutes);
 
 // ===============================
 // MIDTRANS REDIRECT
