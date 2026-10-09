@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 
-const { sequelize, UserPushToken } = require("./models");
+const { sequelize, UserPushToken, BusinessClock } = require("./models");
 
 const authRoutes = require("./routes/authRoutes");
 const tenantRoutes = require("./routes/tenantRoutes");
@@ -17,6 +17,7 @@ const priceRoutes = require("./routes/priceRoutes");
 const internalWalletRoutes = require("./routes/internalWalletRoutes");
 const swapRoutes = require("./routes/swapRoutes");
 const installmentRoutes = require("./routes/installmentRoutes");
+const clockRoutes = require("./routes/clockRoutes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
@@ -35,6 +36,7 @@ async function connectDatabase() {
       // CREATE TABLE IF NOT EXISTS — sync() tidak jalan di Vercel
       // karena app.listen hanya dieksekusi saat require.main === module.
       await UserPushToken.sync();
+      await BusinessClock.sync();
     })();
   }
 
@@ -86,6 +88,7 @@ app.use("/api/earn", earnRoutes);
 app.use("/api/topups", topupRoutes);
 app.use("/api/swap", swapRoutes);
 app.use("/api/installments", installmentRoutes);
+app.use("/api/admin", clockRoutes);
 
 // ===============================
 // MIDTRANS REDIRECT

@@ -16,8 +16,9 @@ const clock = require("./installment.clock");
 const BATCH_SIZE = Number(process.env.INSTALLMENT_SCHEDULER_BATCH ?? 50);
 let running = false;
 
-async function tick(now = clock.now()) {
+async function tick(now) {
   if (running) return { skipped: true };
+  if (!now) now = await clock.now();
   running = true;
 
   let processed = 0;

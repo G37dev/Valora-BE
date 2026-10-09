@@ -65,7 +65,9 @@ const getConfig = (req, res) =>
  */
 const quote = async (req, res) => {
   try {
-    const data = await service.quote(req.body || {}, { now: clock.now(req) });
+    const data = await service.quote(req.body || {}, {
+      now: await clock.now(req),
+    });
     return res.status(200).json({ success: true, data });
   } catch (error) {
     return handleError(res, error, "menghitung quote");
@@ -84,15 +86,15 @@ const createRequest = async (req, res) => {
     const { plan, created } = await service.createRequest({
       coreId,
       body: req.body || {},
-      now: clock.now(req),
-      isTest: clock.isOverride(req),
+      now: await clock.now(req),
+      isTest: await clock.isTest(req),
     });
     return res.status(created ? 201 : 200).json({
       success: true,
       message: created
         ? "Request installment dibuat. Bayar DP / installment pertama sebelum kedaluwarsa."
         : "Request sudah pernah dibuat (idempotent).",
-      data: service.serializePlan(plan, { at: clock.now(req) }),
+      data: service.serializePlan(plan, { at: await clock.now(req) }),
     });
   } catch (error) {
     return handleError(res, error, "membuat request installment");
@@ -112,7 +114,7 @@ const pay = async (req, res) => {
       coreId,
       planId: req.params.plan_id,
       body: req.body || {},
-      now: clock.now(req),
+      now: await clock.now(req),
     });
 
     return res.status(200).json({
@@ -131,7 +133,7 @@ const pay = async (req, res) => {
           status_before: payment.statusBefore,
           status_after: payment.statusAfter,
         },
-        plan: service.serializePlan(plan, { at: clock.now(req) }),
+        plan: service.serializePlan(plan, { at: await clock.now(req) }),
       }),
     });
   } catch (error) {
@@ -148,7 +150,7 @@ const cancel = async (req, res) => {
     const { plan, result } = await service.cancel({
       coreId,
       planId: req.params.plan_id,
-      now: clock.now(req),
+      now: await clock.now(req),
     });
     return res.status(200).json({
       success: true,
@@ -160,7 +162,7 @@ const cancel = async (req, res) => {
           raw_refund_idr: result.rawRefund,
           final_refund_idr: result.finalRefund,
         },
-        plan: service.serializePlan(plan, { at: clock.now(req) }),
+        plan: service.serializePlan(plan, { at: await clock.now(req) }),
       }),
     });
   } catch (error) {
@@ -177,7 +179,7 @@ const restructure = async (req, res) => {
     const { plan, result } = await service.restructure({
       coreId,
       planId: req.params.plan_id,
-      now: clock.now(req),
+      now: await clock.now(req),
     });
     return res.status(200).json({
       success: true,
@@ -188,7 +190,7 @@ const restructure = async (req, res) => {
           extension_months: result.extension,
           new_maturity_at: result.restructureMaturityAt,
         },
-        plan: service.serializePlan(plan, { at: clock.now(req) }),
+        plan: service.serializePlan(plan, { at: await clock.now(req) }),
       }),
     });
   } catch (error) {
@@ -206,10 +208,10 @@ const listPlans = async (req, res) => {
       coreId,
       status: req.query.status,
       includeTest:
-        clock.isOverride(req) ||
+        (await clock.isTest(req)) ||
         req.query.include_test === "1" ||
         req.query.include_test === "true",
-      now: clock.now(req),
+      now: await clock.now(req),
     });
     return res.status(200).json({ success: true, data });
   } catch (error) {
@@ -226,7 +228,7 @@ const getPlanDetail = async (req, res) => {
     const data = await service.getPlanDetail({
       coreId,
       planId: req.params.plan_id,
-      now: clock.now(req),
+      now: await clock.now(req),
     });
     return res.status(200).json({ success: true, data });
   } catch (error) {

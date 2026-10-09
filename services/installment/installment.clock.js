@@ -1,54 +1,68 @@
 /*
- * Test clock untuk Gold Installment.
+ * Sumber waktu untuk Gold Installment.
  *
- * Production: now() selalu waktu server nyata.
- * Testing: set INSTALLMENT_TEST_CLOCK=1 lalu kirim header
- *   X-Installment-Now: 2027-04-05T00:00:00+07:00
- * pada request apa pun (create/pay/cancel/restructure/detail), atau set env
- * INSTALLMENT_TEST_NOW=<ISO> untuk memaksa waktu di worker/scheduler.
+ * Urutan (Business Clock Guide v1.0):
+ * 1. Override per-request (dev tool): header X-Installment-Now atau
+ *    body/query as_of — hanya bila simulasi diizinkan env.
+ * 2. BusinessClock global (tabel business_clock) — SIMULATED mode.
+ * 3. Real server time.
  *
- * Waktu yang dikirim dipakai sebagai effectiveAt -> settleToNow mengevaluasi
- * semua anniversary/maturity/cure yang terlewat seolah waktu sudah melompat.
+ * Simulasi hanya aktif bila BUSINESS_CLOCK_SIM=1 (atau env legacy
+ * INSTALLMENT_TEST_CLOCK=1) diset. Production harus selalu REAL:
+ * unset env tsb untuk rilis.
+ *
+ * now()/isTest() sekarang ASYNC karena membaca tabel business_clock.
  */
 
+const businessClock = require("../businessClock");
+
 const ENABLED =
+  businessClock.SIM_ENABLED ||
   String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "1" ||
   String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "true";
 
-function now(req) {
-  if (!ENABLED) return new Date();
-
-  // Worker/scheduler: override global via env
-  const envNow = process.env.INSTALLMENT_TEST_NOW;
-  if (envNow) {
-    const d = new Date(envNow);
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-
-  // HTTP request: header atau body/query
+function requestOverride(req) {
   const raw =
     req?.headers?.["x-installment-now"] ??
     req?.body?.as_of ??
     req?.query?.as_of;
-  if (raw) {
-    const d = new Date(String(raw));
-    if (!Number.isNaN(d.getTime())) return d;
+  if (!raw) return null;
+  const d = new Date(String(raw));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+async function now(req) {
+  if (ENABLED) {
+    // Worker/scheduler: override global via env
+    const envNow = process.env.INSTALLMENT_TEST_NOW;
+    if (envNow) {
+      const d = new Date(envNow);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+
+    // HTTP request: header atau body/query
+    const override = requestOverride(req);
+    if (override) return override;
   }
 
-  return new Date();
+  return businessClock.current();
 }
 
-/** true bila request diproses dengan waktu simulasi (test mode aktif + override ada). */
-function isOverride(req) {
-  if (!ENABLED) return false;
-  if (process.env.INSTALLMENT_TEST_NOW) return true;
-  return Boolean(
-    req?.headers?.["x-installment-now"] ??
-    req?.body?.as_of ??
-    req?.query?.as_of ??
-    req?.body?.is_test ??
-    req?.query?.is_test,
-  );
+/**
+ * true bila waktu diproses dalam mode simulasi — dipakai untuk menandai
+ * plan sebagai isTest dan menyertakan plan test pada list.
+ */
+async function isTest(req) {
+  if (ENABLED) {
+    if (process.env.INSTALLMENT_TEST_NOW) return true;
+    if (requestOverride(req) || req?.body?.is_test || req?.query?.is_test) {
+      return true;
+    }
+  }
+  return businessClock.isSimulated();
 }
 
-module.exports = { now, isOverride, ENABLED };
+// Backward-compat alias
+const isOverride = isTest;
+
+module.exports = { now, isTest, isOverride, ENABLED };

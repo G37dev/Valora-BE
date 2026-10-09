@@ -1,0 +1,204 @@
+VIVALORA
+Business Clock &amp; Time Simulation
+Developer Guide - Gold Installment Standard First
+Document Control
+Value
+Version
+v1.0
+Scope
+Development / Staging time simulation for VIVALORA financial engines
+Initial Feature
+Gold Installment - Standard overdue / due-date testing
+Business Timezone
+Asia/Jakarta
+Production Rule
+Production must always use REAL time
+Goal
+Developer dapat menguji lifecycle berbasis waktu - due date, overdue, late penalty, maturity, cure, dan event kalender - tanpa menunggu hari atau bulan secara real. Data kontrak tetap asli; yang disimulasikan hanya 'waktu sekarang' yang dibaca financial engine.
+1. Core Concept
+VIVALORA membutuhkan satu sumber waktu resmi yang dibaca oleh financial engine. Di Production sumber waktunya adalah real server/system time. Di Development/Staging sumber waktunya dapat diganti menjadi waktu simulasi yang bisa di-set exact oleh developer.
+PRODUCTIONReal Time ---------------------&gt; BusinessClock.current()DEVELOPMENT / STAGINGSimulated Time ----------------&gt; BusinessClock.current()BusinessClock.current() -------&gt; Installment Engine                              -&gt; Earn Engine (later)                              -&gt; Loan Engine (later)
+1.1 Yang Diubah Saat Testing
+Data / Clock
+Boleh Diubah?
+Reason
+created_at / activated_at
+NO
+Tetap timestamp asli position.
+next_due_at
+NO
+Tetap financial deadline asli.
+maturity_at
+NO
+Tetap contractual maturity asli.
+business_now / simulated_now
+YES
+Inilah waktu 'sekarang' yang disimulasikan.
+Contoh
+Position dibuat 09 Oct 2026 23:00 WIB dan memiliki next_due_at 09 Nov 2026 00:00 WIB. Untuk testing, jangan ubah next_due_at. Set saja simulated_now = 09 Nov 2026 00:00 WIB lalu jalankan checker.
+2. Step 1 - Create BusinessClock Service
+Ini adalah pekerjaan pertama. Semua logic time-based Gold Installment harus mengambil 'current time' dari BusinessClock, bukan langsung dari server clock di banyak tempat.
+Behavior
+Environment / Mode
+BusinessClock.current()
+Production / REAL
+Return real current time.
+Staging / REAL
+Return real current time.
+Staging / SIMULATED
+Return simulated_now dari config/table.
+Development / SIMULATED
+Return simulated_now dari config/table.
+Target tahap ini sederhana: Installment Service cukup bisa meminta satu nilai current business time dari satu sumber.
+3. Step 2 - Create Business Clock Config / Table
+Buat satu config/table khusus. Tidak perlu satu row per user atau per position. Satu clock per environment cukup untuk tahap awal.
+Field
+Example
+Purpose
+environment
+staging
+Membedakan staging / development.
+clock_mode
+SIMULATED
+REAL atau SIMULATED.
+simulated_now
+2026-11-09 00:00:00+07
+Waktu test yang dibaca engine.
+business_timezone
+Asia/Jakarta
+Basis kalender bisnis.
+updated_by
+developer/admin id
+Audit siapa yang mengubah.
+updated_at
+real system timestamp
+Audit perubahan clock.
+Security Rule
+Production tidak boleh mengizinkan SIMULATED mode. Backend harus reject konfigurasi simulated clock pada production environment.
+4. Step 3 - Generate Standard next_due_at Deterministically
+Saat Standard Installment aktif, backend membuat dan menyimpan due date. Untuk rule yang sedang dipakai: monthly due mengikuti tanggal anniversary pada 00:00 WIB.
+activated_at09 Oct 2026 23:00 WIB        |        vderive monthly calendar anniversary        |        vnext_due_at09 Nov 2026 00:00 WIB
+Setelah tersimpan, due date itu tidak perlu dihitung ulang dari nol setiap kali user membuka halaman.
+Minimum Position Time Fields
+Field
+Example
+activated_at
+09 Oct 2026 23:00 WIB
+next_due_at
+09 Nov 2026 00:00 WIB
+maturity_at
+contractual tenor end
+status
+RUNNING / OVERDUE / etc.
+5. Step 4 - Create Installment Due Checker
+Checker adalah business logic yang membandingkan financial deadline dengan BusinessClock. Jangan taruh semua logic langsung di cron/scheduler.
+business_now = BusinessClock.current()        |        vfind Standard positions:next_due_at &lt;= business_nowAND scheduled amount still unpaid        |        vmark/evaluate OVERDUE        |        vcalculate applicable Late Penalty
+Important
+Scheduler hanya trigger. Financial rule harus tetap berada di Due Checker supaya function yang sama bisa dipakai Production scheduler dan manual Development testing.
+6. Step 5 - Add Manual Staging Controls
+Sebelum bikin UI yang rapi, developer cukup menyediakan internal endpoint / admin action untuk dua hal:
+Set Business Time.
+Run Installment Due Checker.
+Dengan dua action ini, lifecycle satu bulan bisa dites dalam beberapa detik.
+Recommended Internal Test Panel
+VIVALORA TIME SIMULATORClock Mode       [ SIMULATED ]Business Date    [ 09 Nov 2026 ]Business Time    [ 00:00:00 ][ Apply Time ][ Run Installment Checker ]
+7. First Manual QA Scenario
+Gunakan satu Standard Installment sederhana sebagai smoke test.
+Step
+Action
+Expected
+1
+Create Standard at 09 Oct 2026 23:00
+next_due_at = 09 Nov 2026 00:00
+2
+Set simulated_now = 08 Nov 2026 23:59:59
+Position remains RUNNING
+3
+Run checker
+No overdue
+4
+Set simulated_now = 09 Nov 2026 00:00:00
+Deadline reached
+5
+Run checker
+Unpaid installment becomes OVERDUE
+6
+Set simulated_now = 10 Nov 2026 00:00:00
+Late-day progression test
+7
+Run checker
+Late Penalty follows configured Standard rule
+Boundary Cases
+Simulated Time
+Expected
+08 Nov 2026 23:59:59
+Not overdue
+09 Nov 2026 00:00:00
+Overdue if unpaid
+09 Nov 2026 00:00:01
+Overdue
+Payment at 08 Nov 23:59:59
+On-time
+Payment at 09 Nov 00:00:00
+Treat according to exact due-boundary rule; recommended due_at reached = late
+Checker runs 09 Nov 00:05
+Financial effective overdue starts from due_at 00:00, not checker runtime
+8. Step 6 - Production Scheduler
+Setelah manual checker terbukti benar, baru scheduler production dibuat. Scheduler tidak menghitung rule sendiri; scheduler hanya menjalankan Due Checker secara periodik.
+Production Scheduler        |        vInstallment Due Checker        |        vBusinessClock.current() = REAL TIME        |        vevaluate due / overdue positions
+Contoh scheduler dapat berjalan setiap 1 menit. Keterlambatan scheduler tidak boleh mengubah financial effective timestamp.
+9. Recommended Development Order
+Order
+Task
+Done When
+1
+BusinessClock service
+Can return REAL or SIMULATED current time.
+2
+business_clock config/table
+Developer can set exact simulated_now.
+3
+Standard due-date generation
+next_due_at generated correctly at 00:00 WIB.
+4
+Installment Due Checker
+Can determine RUNNING vs OVERDUE.
+5
+Manual staging trigger
+Developer can set time + run checker.
+6
+Boundary tests
+Second-before / exact / second-after due verified.
+7
+Late Penalty test
+Penalty progression and cap verified.
+8
+Production scheduler
+Calls same checker automatically.
+9
+Time Simulator UI
+Optional convenience for QA/admin.
+10
+Reuse for Flexible / Earn / Loan
+Only after Standard is stable.
+10. Definition of Done - Phase 1
+Standard position can be created normally with real contract timestamps.
+next_due_at is stored correctly using Asia/Jakarta calendar semantics.
+Staging Business Clock can jump to any exact date/time.
+Changing simulated_now does not mutate created_at, activated_at, next_due_at, or maturity_at.
+Manual checker can move an unpaid position from RUNNING to OVERDUE at the exact due boundary.
+Checker can be run repeatedly without creating duplicate overdue/penalty events.
+Production is hard-blocked from SIMULATED clock mode.
+Phase 1 Target
+Position: next_due_at = 09 Nov 2026 00:00. Simulated time 08 Nov 23:59:59 -&gt; RUNNING. Simulated time 09 Nov 00:00:00 + Run Checker -&gt; OVERDUE. Jika scenario ini reliable dan repeatable, fondasi time simulation dianggap valid.
+11. Later Reuse
+Setelah Standard stabil, BusinessClock yang sama dapat dipakai untuk:
+Feature
+Time-Based Logic
+Flexible Installment
+Monthly Carrying, Max Tenor, Cure, Restructure maturity
+Earn
+90D / 180D / 360D maturity and claimability
+Loan
+Interest accrual, maturity, grace period, settlement timing
+End of Guide.

@@ -29,6 +29,9 @@ const InstallmentEvent = require("./InstallmentEvent");
 // Push Notifications
 const UserPushToken = require("./UserPushToken");
 
+// Business Clock (time simulation)
+const BusinessClock = require("./BusinessClock");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -377,4 +380,7 @@ module.exports = {
 
   // Push Notifications
   UserPushToken,
+
+  // Business Clock
+  BusinessClock,
 };
