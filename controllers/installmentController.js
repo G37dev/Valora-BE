@@ -91,9 +91,11 @@ const createRequest = async (req, res) => {
     });
     return res.status(created ? 201 : 200).json({
       success: true,
-      message: created
-        ? "Request installment dibuat. Bayar DP / installment pertama sebelum kedaluwarsa."
-        : "Request sudah pernah dibuat (idempotent).",
+      message: !created
+        ? "Request sudah pernah dibuat (idempotent)."
+        : plan.status === "ACTIVE"
+          ? "Plan aktif. Cicilan pertama jatuh tempo pada interval pertama."
+          : "Request installment dibuat. Bayar DP sebelum kedaluwarsa.",
       data: service.serializePlan(plan, { at: await clock.now(req) }),
     });
   } catch (error) {

@@ -568,7 +568,7 @@ async function settleToNow(plan, s, schedules, effectiveAt, transaction) {
 // ============================================================
 
 /**
- * Aktivasi kontrak: bayar DP (Flexible) / installment pertama (Standard).
+ * Aktivasi kontrak: bayar DP (Flexible) / tanpa pembayaran awal (Standard).
  * Mengembalikan { applied, allocation }.
  */
 async function activate(
@@ -592,7 +592,7 @@ async function activate(
   const initial = big(plan.initialPaymentIdr);
   if (requestedAmount < initial) {
     throw new InstallmentError(
-      `Pembayaran awal harus tepat ${initial.toString()} IDR (DP / installment pertama)`,
+      `Pembayaran awal harus tepat ${initial.toString()} IDR (DP)`,
       { code: "INITIAL_PAYMENT_MISMATCH", details: { required_idr: initial } },
     );
   }
@@ -633,10 +633,12 @@ async function activate(
     const rows = amounts.map((amountIdr, i) => ({
       planId: plan.id,
       sequence: i + 1,
+      // Standard tidak ada pembayaran awal: cicilan ke-N jatuh tempo di
+      // interval ke-N setelah aktivasi (bulan 1..tenor, bukan dari hari H).
       dueAt:
         plan.installmentGap === "MONTHLY"
-          ? cal.calendarMonthsFrom(activatedAt, i)
-          : cal.calendarDaysFrom(activatedAt, 7 * i),
+          ? cal.calendarMonthsFrom(activatedAt, i + 1)
+          : cal.calendarDaysFrom(activatedAt, 7 * (i + 1)),
       amountIdr: amountIdr.toString(),
     }));
     const created = await InstallmentSchedule.bulkCreate(rows, {

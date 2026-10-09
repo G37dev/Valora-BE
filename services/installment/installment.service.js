@@ -200,7 +200,8 @@ async function createRequest({
           priceLockMarginBps: isStandard ? null : q.priceLockMarginBps,
           lockedPlanValueIdr: isStandard ? null : q.lockedPlanValue.toString(),
           dpBps: isStandard ? null : q.dpBps,
-          initialPaymentIdr: q.initialPayment.toString(),
+          // Standard: tanpa pembayaran awal — aktivasi otomatis.
+          initialPaymentIdr: isStandard ? "0" : q.initialPayment.toString(),
           principalOutstandingIdr: (isStandard
             ? q.totalPayment
             : q.lockedPlanValue
@@ -235,6 +236,15 @@ async function createRequest({
         },
         t,
       );
+
+      // Standard tidak butuh pembayaran awal: kontrak langsung aktif di
+      // request creation, cicilan pertama jatuh tempo di interval pertama.
+      if (isStandard) {
+        const s = engine.loadState(created);
+        const schedules = [];
+        await engine.activate(created, s, schedules, 0n, now, t);
+        await engine.persist(created, s, schedules, now, t);
+      }
 
       return created;
     });

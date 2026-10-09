@@ -78,7 +78,9 @@ function clampNonNegative(value) {
 function standardMarkupBps(asset, tenorMonths) {
   const bps = STANDARD_MARKUP_BPS[asset]?.[tenorMonths];
   if (bps === undefined) {
-    throw new Error(`Markup Standard tidak tersedia untuk ${asset}/${tenorMonths}M`);
+    throw new Error(
+      `Markup Standard tidak tersedia untuk ${asset}/${tenorMonths}M`,
+    );
   }
   return bps;
 }
@@ -94,7 +96,9 @@ function priceLockMarginBps(tenorMonths) {
 function restructureExtensionMonths(tenorMonths) {
   const months = RESTRUCTURE_EXTENSION_MONTHS[tenorMonths];
   if (months === undefined) {
-    throw new Error(`Restructure extension tidak tersedia untuk ${tenorMonths}M`);
+    throw new Error(
+      `Restructure extension tidak tersedia untuk ${tenorMonths}M`,
+    );
   }
   return months;
 }
@@ -114,7 +118,8 @@ function computeAssetValue(goldAmount, lockedPriceIdr) {
 
 /**
  * Jumlah installment. Dikunci saat request dibuat (dihitung dari requestAt)
- * agar quote == kontrak. Installment pertama dibayar saat activation.
+ * agar quote == kontrak. Semua installment jatuh tempo per interval
+ * (tidak ada pembayaran awal — aktivasi otomatis saat request dibuat).
  */
 function standardScheduleCount(gap, tenorMonths, requestAt) {
   if (gap === INSTALLMENT_GAP.MONTHLY) return Number(tenorMonths);
@@ -158,10 +163,20 @@ function standardQuote({
   const assetValue = computeAssetValue(goldAmount, lockedPriceIdr);
   const markupAmount = bpsOf(assetValue, markupBps);
   const totalPayment = assetValue + markupAmount;
-  const scheduleCount = standardScheduleCount(installmentGap, tenorMonths, requestAt);
+  const scheduleCount = standardScheduleCount(
+    installmentGap,
+    tenorMonths,
+    requestAt,
+  );
   const installments = buildStandardInstallments(totalPayment, scheduleCount);
-  const minGoldAmount = minimumGoldAmount({ markupBps, scheduleCount, lockedPriceIdr });
-  const meetsMinimum = installments.every((x) => x >= RULES.MIN_INSTALLMENT_IDR);
+  const minGoldAmount = minimumGoldAmount({
+    markupBps,
+    scheduleCount,
+    lockedPriceIdr,
+  });
+  const meetsMinimum = installments.every(
+    (x) => x >= RULES.MIN_INSTALLMENT_IDR,
+  );
 
   return {
     planType: PLAN_TYPE.STANDARD,
@@ -176,7 +191,9 @@ function standardQuote({
     totalPayment,
     scheduleCount,
     installments,
-    initialPayment: installments[0],
+    // Standard tidak ada pembayaran awal — plan langsung ACTIVE saat
+    // request dibuat, installment pertama jatuh tempo di interval pertama.
+    initialPayment: 0n,
     minInstallmentIdr: RULES.MIN_INSTALLMENT_IDR,
     minGoldAmount,
     meetsMinimum,
@@ -187,7 +204,13 @@ function standardQuote({
 // Flexible
 // ============================================================
 
-function flexibleQuote({ asset, tenorMonths, goldAmount, lockedPriceIdr, dpBps }) {
+function flexibleQuote({
+  asset,
+  tenorMonths,
+  goldAmount,
+  lockedPriceIdr,
+  dpBps,
+}) {
   const dp = Number(dpBps);
   if (!Number.isInteger(dp) || dp < RULES.DP_MIN_BPS || dp > RULES.DP_MAX_BPS) {
     throw new Error(
@@ -258,9 +281,17 @@ function alcRateBps(pcBps) {
 function autoLiquidCompensation({ pcBps, eligiblePaid, planValue }) {
   const rateBps = alcRateBps(pcBps);
   if (rateBps === null) {
-    return { rateBps: null, base: "PLAN_VALUE", amount: bpsOf(planValue, RULES.ALC_FLOOR_LPV_BPS) };
+    return {
+      rateBps: null,
+      base: "PLAN_VALUE",
+      amount: bpsOf(planValue, RULES.ALC_FLOOR_LPV_BPS),
+    };
   }
-  return { rateBps, base: "ELIGIBLE_PAID", amount: bpsOf(eligiblePaid, rateBps) };
+  return {
+    rateBps,
+    base: "ELIGIBLE_PAID",
+    amount: bpsOf(eligiblePaid, rateBps),
+  };
 }
 
 function carryingAccrual(principalOutstanding) {
@@ -283,7 +314,12 @@ function protocolFee(assetValue) {
  * 5.6 Late penalty = overdue x 0.05% x days, cap 2% x installment amount.
  * Mengembalikan tambahan penalty yang boleh di-charge sekarang.
  */
-function latePenaltyAccrual({ overdueRemaining, days, alreadyCharged, installmentAmount }) {
+function latePenaltyAccrual({
+  overdueRemaining,
+  days,
+  alreadyCharged,
+  installmentAmount,
+}) {
   if (days <= 0 || big(overdueRemaining) <= 0n) return 0n;
   const cap = bpsOf(installmentAmount, RULES.LATE_PENALTY_CAP_BPS);
   const room = clampNonNegative(cap - big(alreadyCharged));
@@ -309,7 +345,8 @@ function allocateWaterfall(amount, buckets) {
     allocations[key] = take;
     remaining -= take;
     if (remaining === 0n) {
-      for (const rest of buckets) if (!(rest.key in allocations)) allocations[rest.key] = 0n;
+      for (const rest of buckets)
+        if (!(rest.key in allocations)) allocations[rest.key] = 0n;
       break;
     }
   }
