@@ -176,7 +176,11 @@ function computeNextEventAt(plan, schedules = []) {
 async function persist(plan, s, schedules, effectiveAt, transaction) {
   flushState(plan, s);
   plan.set({
-    settledThroughAt: effectiveAt,
+    settledThroughAt:
+      plan.settledThroughAt &&
+      cal.toDate(plan.settledThroughAt) > cal.toDate(effectiveAt)
+        ? plan.settledThroughAt
+        : effectiveAt,
     nextEventAt: computeNextEventAt(plan, schedules),
   });
   await plan.save({ transaction });
@@ -457,15 +461,11 @@ async function autoLiquidate(plan, s, effectiveAt, transaction) {
 async function settleToNow(plan, s, schedules, effectiveAt, transaction) {
   const now = cal.toDate(effectiveAt);
 
-  // Guard: tidak boleh mundur
+  // Sudah settle melewati now (mis. business clock dikembalikan ke REAL
+  // setelah simulasi): semua event <= settled_through_at sudah teraplikasi,
+  // settle jadi no-op dan plan tetap bisa dibaca/dibayar.
   if (plan.settledThroughAt && cal.toDate(plan.settledThroughAt) > now) {
-    throw new InstallmentError(
-      "effectiveAt lebih awal dari settled_through_at",
-      {
-        status: 409,
-        code: "EFFECTIVE_TIME_REGRESSION",
-      },
-    );
+    return;
   }
 
   // Loop sampai tidak ada event terjadwal tersisa <= now
