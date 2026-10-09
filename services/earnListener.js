@@ -5,7 +5,7 @@ const {
   prepareEvent,
   watchContractEvents,
 } = require("thirdweb");
-const { defineChain } = require("thirdweb/chains");
+const { sepolia: customSepolia } = require("../utils/chain");
 const { toTokens } = require("thirdweb/utils");
 const { Op } = require("sequelize");
 const { Wallet, Transaction } = require("../models");
@@ -18,13 +18,6 @@ if (!process.env.THIRDWEB_SECRET_KEY) {
 
 const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY,
-});
-
-const customSepolia = defineChain({
-  id: 11155111,
-  rpc:
-    process.env.SEPOLIA_RPC_URL ||
-    "https://ethereum-sepolia-rpc.publicnode.com",
 });
 
 const startEarnListener = async () => {

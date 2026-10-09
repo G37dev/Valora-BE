@@ -1,7 +1,7 @@
 const { createThirdwebClient, getContract, readContract } = require("thirdweb");
 
 const { decimals, balanceOf } = require("thirdweb/extensions/erc20");
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../../utils/chain");
 
 const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY,

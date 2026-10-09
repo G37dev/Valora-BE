@@ -1,6 +1,6 @@
 const { Wallet, InternalWallet } = require("../models");
 const { createThirdwebClient, getContract } = require("thirdweb");
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../utils/chain");
 const { getWalletBalance } = require("thirdweb/wallets");
 const { getBalance: getErc20Balance } = require("thirdweb/extensions/erc20");
 

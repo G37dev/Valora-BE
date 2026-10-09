@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const Decimal = require("decimal.js");
 const { createThirdwebClient, getContract } = require("thirdweb");
 const { balanceOf, decimals } = require("thirdweb/extensions/erc20");
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../../utils/chain");
 const {
   sequelize,
   Swap,

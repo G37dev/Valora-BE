@@ -23,7 +23,7 @@ const { EARN_STATUS } = require("../services/earn/earn.constants");
 
 const { waitForReceipt } = require("thirdweb");
 
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../utils/chain");
 
 const connection = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,

@@ -5,7 +5,7 @@ const {
   sendTransaction,
 } = require("thirdweb");
 const { privateKeyAccount, smartWallet } = require("thirdweb/wallets");
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../utils/chain");
 const { transfer } = require("thirdweb/extensions/erc20");
 const { getRpcClient, eth_blockNumber } = require("thirdweb/rpc");
 

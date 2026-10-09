@@ -2,7 +2,7 @@ const { createThirdwebClient, getContract } = require("thirdweb");
 
 const { privateKeyAccount } = require("thirdweb/wallets");
 
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("./chain");
 
 if (!process.env.THIRDWEB_SECRET_KEY) {
   throw new Error("THIRDWEB_SECRET_KEY belum dikonfigurasi.");

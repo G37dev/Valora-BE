@@ -7,7 +7,7 @@ const {
   ENTRYPOINT_ADDRESS_v0_7,
 } = require("thirdweb/wallets/smart");
 
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../../utils/chain");
 
 const { isValidAddress, normalizeAsset } = require("./earn.validation");
 

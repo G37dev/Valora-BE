@@ -12,7 +12,7 @@ const {
   getRouterContract,
 } = require("./earn.blockchain.service");
 
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../../utils/chain");
 
 const ensureTokenAllowance = async ({
   tokenAddress,

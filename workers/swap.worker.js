@@ -13,7 +13,7 @@ const {
 
 const { decimals, balanceOf } = require("thirdweb/extensions/erc20");
 const { privateKeyToAccount } = require("thirdweb/wallets");
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../utils/chain");
 
 const {
   Swap,

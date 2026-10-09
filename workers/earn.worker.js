@@ -20,7 +20,7 @@ const {
   parseEarnPositionCreated,
 } = require("../services/earn/earn.event.service");
 
-const { sepolia } = require("thirdweb/chains");
+const { sepolia } = require("../utils/chain");
 const { waitForReceipt } = require("thirdweb");
 
 const { EARN_STATUS } = require("../services/earn/earn.constants");
