@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 
-const { sequelize } = require("./models");
+const { sequelize, UserPushToken } = require("./models");
 
 const authRoutes = require("./routes/authRoutes");
 const tenantRoutes = require("./routes/tenantRoutes");
@@ -30,7 +30,12 @@ let databasePromise = null;
 
 async function connectDatabase() {
   if (!databasePromise) {
-    databasePromise = sequelize.authenticate();
+    databasePromise = (async () => {
+      await sequelize.authenticate();
+      // CREATE TABLE IF NOT EXISTS — sync() tidak jalan di Vercel
+      // karena app.listen hanya dieksekusi saat require.main === module.
+      await UserPushToken.sync();
+    })();
   }
 
   await databasePromise;

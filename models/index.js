@@ -26,6 +26,9 @@ const InstallmentSchedule = require("./InstallmentSchedule");
 const InstallmentPayment = require("./InstallmentPayment");
 const InstallmentEvent = require("./InstallmentEvent");
 
+// Push Notifications
+const UserPushToken = require("./UserPushToken");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -311,6 +314,22 @@ InstallmentEvent.belongsTo(InstallmentPlan, {
 });
 
 // ==========================================
+// User & Push Tokens
+// ==========================================
+
+User.hasMany(UserPushToken, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "pushTokens",
+});
+
+UserPushToken.belongsTo(User, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "user",
+});
+
+// ==========================================
 // Exports
 // ==========================================
 
@@ -355,4 +374,7 @@ module.exports = {
   InstallmentSchedule,
   InstallmentPayment,
   InstallmentEvent,
+
+  // Push Notifications
+  UserPushToken,
 };
