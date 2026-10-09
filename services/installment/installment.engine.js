@@ -55,8 +55,28 @@ function loadState(plan) {
     sepa: big(plan.standardEligiblePaidIdr),
     gross: big(plan.grossCashPaidIdr),
     actualCost: big(plan.actualCostIdr),
+    // Push notifications yang di-queue selama settle; dikirim oleh service
+    // SETELAH transaction commit agar notif selalu konsisten dengan DB.
+    pushes: [],
   };
 }
+
+function queuePush(s, push) {
+  if (Array.isArray(s.pushes)) s.pushes.push(push);
+}
+
+const fmtIdr = (v) => `Rp ${Number(big(v)).toLocaleString("id-ID")}`;
+
+const fmtDateId = (d) =>
+  new Intl.DateTimeFormat("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Jakarta",
+    timeZoneName: "short",
+  }).format(cal.toDate(d));
 
 function flushState(plan, s) {
   plan.set({
@@ -158,8 +178,14 @@ function computeNextEventAt(plan, schedules = []) {
       if (!isFlexible(plan)) {
         const open = schedules.find((x) => x.status !== "PAID");
         if (open) {
-          const from = open.penaltyAccruedThroughAt || open.dueAt;
-          candidates.push(cal.addDays(from, 1));
+          // Belum pernah overdue -> visit tepat di dueAt supaya checker bisa
+          // menandai overdue + kirim notif di boundary. Setelah ditandai
+          // (penaltyAccruedThroughAt terisi) -> visit harian untuk akru.
+          candidates.push(
+            open.penaltyAccruedThroughAt
+              ? cal.addDays(open.penaltyAccruedThroughAt, 1)
+              : cal.toDate(open.dueAt),
+          );
         }
       }
       return cal.minDate(...candidates);
@@ -232,6 +258,46 @@ async function accrueLatePenalty(plan, s, schedules, throughAt, transaction) {
   }
 }
 
+/**
+ * Tandai schedule Standard yang sudah melewati dueAt sebagai overdue:
+ * isi penaltyAccruedThroughAt=dueAt (sekaligus jadi marker + kursor akru),
+ * catat event, dan queue push notification. Idempotent — marker null berarti
+ * schedule belum pernah ditandai overdue.
+ */
+async function markOverdueSchedules(plan, s, schedules, now, transaction) {
+  for (const item of schedules) {
+    if (item.status === "PAID") continue;
+    const due = cal.toDate(item.dueAt);
+    if (due > cal.toDate(now)) continue;
+    if (item.penaltyAccruedThroughAt) continue;
+
+    item.set({ penaltyAccruedThroughAt: item.dueAt });
+    queuePush(s, {
+      title: "Installment Overdue",
+      body: `Cicilan #${item.sequence} sebesar ${fmtIdr(big(item.amountIdr) - big(item.paidIdr))} jatuh tempo ${fmtDateId(due)} dan belum dibayar. Denda keterlambatan 0.05%/hari sedang berjalan.`,
+      data: {
+        type: "installment",
+        event: "overdue",
+        plan_id: String(plan.id),
+        sequence: item.sequence,
+      },
+    });
+    await ledger.recordEvent(
+      plan,
+      {
+        eventType: EVENT.INSTALLMENT_OVERDUE,
+        effectiveAt: due,
+        metadata: {
+          sequence: item.sequence,
+          due_at: due,
+          remaining_idr: (big(item.amountIdr) - big(item.paidIdr)).toString(),
+        },
+      },
+      transaction,
+    );
+  }
+}
+
 /** Alokasikan pembayaran principal Standard ke jadwal berurutan. */
 function allocateToSchedules(schedules, amount, effectiveAt) {
   let remaining = amount;
@@ -293,6 +359,13 @@ async function accrueCarrying(plan, s, effectiveAt, transaction) {
 
 async function markFullySettled(plan, s, effectiveAt, transaction) {
   const claimable = cal.isAfterOrEqual(effectiveAt, plan.claimableAt);
+  queuePush(s, {
+    title: "Installment Selesai",
+    body: claimable
+      ? "Semua kewajiban lunas — aset kamu sudah bisa diklaim."
+      : `Semua kewajiban lunas. Aset bisa diklaim mulai ${fmtDateId(plan.claimableAt)}.`,
+    data: { type: "installment", event: "settled", plan_id: String(plan.id) },
+  });
   plan.set({
     status: claimable ? STATUS.CLAIMABLE : STATUS.COMPLETE_PENDING_CLAIM,
     fullySettledAt: effectiveAt,
@@ -324,6 +397,11 @@ async function enterPastDue(plan, s, effectiveAt, transaction) {
     pastDueAt: effectiveAt,
     cureEndsAt: cal.calendarDaysFrom(effectiveAt, RULES.CURE_DAYS),
     nextCarryingAt: null,
+  });
+  queuePush(s, {
+    title: "Plan Past Due",
+    body: `Plan kamu melewati jatuh tempo akhir. Lunasi sisa kewajiban sebelum ${fmtDateId(plan.cureEndsAt)} untuk menghindari likuidasi otomatis.`,
+    data: { type: "installment", event: "past_due", plan_id: String(plan.id) },
   });
   await ledger.recordEvent(
     plan,
@@ -447,6 +525,16 @@ async function autoLiquidate(plan, s, effectiveAt, transaction) {
   });
   plan.set({ calculationSnapshot: toJsonSafe(snapshot) });
 
+  queuePush(s, {
+    title: "Plan Dilikuidasi",
+    body: `Plan kamu dilikuidasi otomatis. Refund ${fmtIdr(finalRefund)} sudah dikreditkan ke IDR wallet.`,
+    data: {
+      type: "installment",
+      event: "auto_liquidated",
+      plan_id: String(plan.id),
+    },
+  });
+
   await ledger.recordEvent(
     plan,
     { eventType: EVENT.AUTO_LIQUIDATED, effectiveAt, metadata: snapshot },
@@ -478,6 +566,9 @@ async function settleToNow(plan, s, schedules, effectiveAt, transaction) {
     }
 
     if (isRunning(plan)) {
+      if (!isFlexible(plan)) {
+        await markOverdueSchedules(plan, s, schedules, now, transaction);
+      }
       const maturity = cal.toDate(effectiveMaturity(plan));
       const candidates = [];
 
@@ -541,6 +632,9 @@ async function settleToNow(plan, s, schedules, effectiveAt, transaction) {
     }
 
     if (plan.status === STATUS.PAST_DUE) {
+      if (!isFlexible(plan)) {
+        await markOverdueSchedules(plan, s, schedules, now, transaction);
+      }
       if (now >= cal.toDate(plan.cureEndsAt)) {
         await autoLiquidate(plan, s, plan.cureEndsAt, transaction);
       }

@@ -12,6 +12,7 @@ const engine = require("./installment.engine");
 const ledger = require("./installment.ledger");
 const v = require("./installment.validation");
 const { InstallmentError, toJsonSafe } = require("./installment.errors");
+const pushService = require("../pushService");
 const {
   RULES_VERSION,
   PLAN_TYPE,
@@ -38,6 +39,42 @@ function withTransaction(transaction, fn) {
   return transaction
     ? sequelize.transaction({ transaction }, fn)
     : sequelize.transaction(fn);
+}
+
+const fmtIdr = (v) => `Rp ${Number(v).toLocaleString("id-ID")}`;
+
+const fmtDateId = (d) =>
+  new Intl.DateTimeFormat("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Jakarta",
+    timeZoneName: "short",
+  }).format(new Date(d));
+
+/**
+ * Kirim push notification yang di-queue engine selama settle (s.pushes).
+ * Dipanggil SETELAH transaction commit — kegagalan push tidak boleh
+ * menggagalkan operasi finansial.
+ */
+async function dispatchPushes(plan, s) {
+  for (const p of s?.pushes ?? []) {
+    try {
+      await pushService.sendPushToUser(plan.coreId, p);
+    } catch (error) {
+      console.log(`[Installment] push gagal plan ${plan.id}:`, error.message);
+    }
+  }
+}
+
+async function sendInstallmentPush(coreId, push) {
+  try {
+    await pushService.sendPushToUser(coreId, push);
+  } catch (error) {
+    console.log(`[Installment] push gagal core ${coreId}:`, error.message);
+  }
 }
 
 async function lockPrice(asset) {
@@ -257,6 +294,31 @@ async function createRequest({
     throw error;
   }
 
+  if (!transaction) {
+    await sendInstallmentPush(
+      plan.coreId,
+      plan.status === STATUS.ACTIVE
+        ? {
+            title: "Installment Aktif",
+            body: `Plan ${isStandard ? "Standard" : "Flexible"} ${plan.goldAmount}g ${plan.assetCode} sudah aktif. Total pembayaran ${fmtIdr(plan.standardTotalPaymentIdr ?? plan.lockedPlanValueIdr)}.`,
+            data: {
+              type: "installment",
+              event: "activated",
+              plan_id: String(plan.id),
+            },
+          }
+        : {
+            title: "Menunggu Pembayaran",
+            body: `Bayar ${fmtIdr(plan.initialPaymentIdr)} sebelum ${fmtDateId(plan.requestExpiresAt)} untuk mengaktifkan plan installment kamu.`,
+            data: {
+              type: "installment",
+              event: "request_created",
+              plan_id: String(plan.id),
+            },
+          },
+    );
+  }
+
   return { plan, created: true };
 }
 
@@ -270,7 +332,8 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
 
   await settlePlan(planId, now, transaction);
 
-  return withTransaction(transaction, async (t) => {
+  let sRef = null;
+  const out = await withTransaction(transaction, async (t) => {
     // Lock plan dulu -> pembayaran paralel untuk plan yang sama diserialisasi,
     // sehingga cek idempotency di bawah ini bebas race.
     const plan = await lockPlan(planId, coreId, t);
@@ -290,6 +353,7 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
     }
 
     const s = engine.loadState(plan);
+    sRef = s;
     const schedules = await engine.loadSchedules(plan, t);
 
     await engine.settleToNow(plan, s, schedules, now, t);
@@ -376,6 +440,24 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
       excess: requested - result.applied,
     };
   });
+
+  if (!transaction) {
+    await dispatchPushes(out.plan, sRef);
+    if (!out.duplicate) {
+      await sendInstallmentPush(coreId, {
+        title: "Pembayaran Diterima",
+        body: `Pembayaran ${fmtIdr(out.payment.amountIdr)} berhasil. Sisa kewajiban: ${fmtIdr(out.plan.principalOutstandingIdr)}.`,
+        data: {
+          type: "installment",
+          event: "payment_applied",
+          plan_id: String(out.plan.id),
+          payment_id: String(out.payment.id),
+        },
+      });
+    }
+  }
+
+  return out;
 }
 
 // ============================================================
@@ -424,7 +506,8 @@ async function restructure({ coreId, planId, now = new Date(), transaction }) {
  * transisi waktu tetap durable walaupun aksinya ditolak.
  */
 async function settlePlan(planId, now = new Date(), transaction) {
-  return withTransaction(transaction, async (t) => {
+  let sRef = null;
+  const plan = await withTransaction(transaction, async (t) => {
     const plan = await InstallmentPlan.findByPk(planId, {
       transaction: t,
       lock: t.LOCK.UPDATE,
@@ -432,11 +515,14 @@ async function settlePlan(planId, now = new Date(), transaction) {
     if (!plan || TERMINAL_STATUSES.includes(plan.status)) return plan;
 
     const s = engine.loadState(plan);
+    sRef = s;
     const schedules = await engine.loadSchedules(plan, t);
     await engine.settleToNow(plan, s, schedules, now, t);
     await engine.persist(plan, s, schedules, now, t);
     return plan;
   });
+  if (!transaction && plan && sRef) await dispatchPushes(plan, sRef);
+  return plan;
 }
 
 // ============================================================
@@ -489,9 +575,31 @@ function serializeEvent(e) {
  * Serialisasi plan untuk UI. `at` dipakai untuk eligibility flags;
  * nilai finansial adalah nilai tersimpan (sudah settled sampai settled_through_at).
  */
+/** Info cicilan overdue dari daftar schedule (untuk serializePlan). */
+function overdueInfoFromSchedules(schedules, now) {
+  let count = 0;
+  let amount = 0n;
+  let oldest = null;
+  for (const item of schedules ?? []) {
+    if (item.status === "PAID") continue;
+    const due = cal.toDate(item.dueAt);
+    if (due > now) continue;
+    count += 1;
+    amount += calc.big(item.amountIdr) - calc.big(item.paidIdr ?? 0);
+    if (!oldest || due < oldest) oldest = due;
+  }
+  return { count, amountIdr: amount.toString(), oldestDueAt: oldest };
+}
+
 function serializePlan(
   plan,
-  { schedules = null, payments = null, events = null, at = new Date() } = {},
+  {
+    schedules = null,
+    payments = null,
+    events = null,
+    at = new Date(),
+    overdue = null,
+  } = {},
 ) {
   const s = engine.loadState(plan);
   const flex = engine.isFlexible(plan);
@@ -584,6 +692,12 @@ function serializePlan(
 
     eligibility: engine.eligibility(plan, s, at),
 
+    overdue:
+      overdue ??
+      (schedules
+        ? overdueInfoFromSchedules(schedules, at)
+        : { count: 0, amountIdr: "0", oldestDueAt: null }),
+
     schedules: schedules ? schedules.map(serializeSchedule) : undefined,
     payments: payments ? payments.map(serializePayment) : undefined,
     events: events ? events.map(serializeEvent) : undefined,
@@ -627,7 +741,46 @@ async function listPlans({
     ? await InstallmentPlan.findAll({ where, order: [["created_at", "DESC"]] })
     : plans;
 
-  return fresh.map((p) => serializePlan(p, { at: now }));
+  // Info overdue per plan (sekali query, group di JS) — untuk badge list.
+  const { Op } = require("sequelize");
+  const stdIds = fresh.filter((p) => !engine.isFlexible(p)).map((p) => p.id);
+  const overdueByPlan = new Map();
+  if (stdIds.length) {
+    const rows = await InstallmentSchedule.findAll({
+      where: {
+        planId: { [Op.in]: stdIds },
+        status: { [Op.ne]: "PAID" },
+        dueAt: { [Op.lte]: now },
+      },
+      raw: true,
+    });
+    for (const r of rows) {
+      const cur = overdueByPlan.get(r.planId) ?? {
+        count: 0,
+        amount: 0n,
+        oldest: null,
+      };
+      cur.count += 1;
+      cur.amount += calc.big(r.amountIdr) - calc.big(r.paidIdr ?? 0);
+      const due = new Date(r.dueAt);
+      if (!cur.oldest || due < cur.oldest) cur.oldest = due;
+      overdueByPlan.set(r.planId, cur);
+    }
+  }
+
+  return fresh.map((p) => {
+    const o = overdueByPlan.get(p.id);
+    return serializePlan(p, {
+      at: now,
+      overdue: o
+        ? {
+            count: o.count,
+            amountIdr: o.amount.toString(),
+            oldestDueAt: o.oldest,
+          }
+        : null,
+    });
+  });
 }
 
 async function getPlanDetail({ coreId, planId, now = new Date() }) {

@@ -118,6 +118,7 @@ const EVENT = Object.freeze({
   PAYMENT_APPLIED: "installment.payment_applied",
   CARRYING_ACCRUED: "installment.carrying_accrued",
   LATE_PENALTY_ACCRUED: "installment.late_penalty_accrued",
+  INSTALLMENT_OVERDUE: "installment.installment_overdue",
   CANCELLATION_CLOSED: "installment.cancellation_closed",
   CANCELLED: "installment.cancelled",
   PAST_DUE: "installment.past_due",
