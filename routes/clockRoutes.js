@@ -6,27 +6,33 @@
  *   POST /api/admin/clock/run-checker -> jalankan installment due checker sekarang
  *
  * Auth: header x-clock-key harus cocok dengan env BUSINESS_CLOCK_KEY,
- * dan simulasi hanya aktif bila BUSINESS_CLOCK_SIM=1 (atau
- * INSTALLMENT_TEST_CLOCK=1) diset. Tanpa env tsb semua endpoint 403 —
- * production selalu REAL.
+ * atau — bila env itu tidak diset — dengan sha256(JWT_SECRET)[0:24].
+ * JWT_SECRET sudah selalu ada, jadi tidak perlu env tambahan.
+ * Production: set BUSINESS_CLOCK_DISABLED=1 -> semua endpoint 403.
  */
 
 const express = require("express");
+const crypto = require("crypto");
 const router = express.Router();
 const businessClock = require("../services/businessClock");
 const clock = require("../services/installment/installment.clock");
 const { tick } = require("../services/installment/installment.scheduler");
 
+function expectedKey() {
+  if (process.env.BUSINESS_CLOCK_KEY) return process.env.BUSINESS_CLOCK_KEY;
+  const secret = process.env.JWT_SECRET || "Valoracore77!";
+  return crypto.createHash("sha256").update(secret).digest("hex").slice(0, 24);
+}
+
 function clockAuth(req, res, next) {
   if (!clock.ENABLED) {
     return res.status(403).json({
       success: false,
-      message: "Simulasi clock tidak diaktifkan di environment ini",
+      message: "Simulasi clock dinonaktifkan di environment ini",
     });
   }
 
-  const key = process.env.BUSINESS_CLOCK_KEY;
-  if (!key || req.headers["x-clock-key"] !== key) {
+  if (req.headers["x-clock-key"] !== expectedKey()) {
     return res.status(403).json({
       success: false,
       message: "x-clock-key tidak valid",
@@ -43,9 +49,7 @@ router.get("/clock", async (req, res) => {
     const state = await businessClock.getState();
     return res.status(200).json({ success: true, data: state });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -80,9 +84,7 @@ router.post("/clock/run-checker", async (req, res) => {
       data: { effective_at: now, ...result },
     });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 

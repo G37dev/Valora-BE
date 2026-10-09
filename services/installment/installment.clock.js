@@ -7,9 +7,11 @@
  * 2. BusinessClock global (tabel business_clock) — SIMULATED mode.
  * 3. Real server time.
  *
- * Simulasi hanya aktif bila BUSINESS_CLOCK_SIM=1 (atau env legacy
- * INSTALLMENT_TEST_CLOCK=1) diset. Production harus selalu REAL:
- * unset env tsb untuk rilis.
+ * DB business clock selalu tersedia (di-gate via admin endpoint
+ * x-clock-key). Override PER-REQUEST (X-Installment-Now / as_of /
+ * INSTALLMENT_TEST_NOW) tetap butuh INSTALLMENT_TEST_CLOCK=1 —
+ * lever ini publik-facing jadi harus opt-in eksplisit.
+ * Production: set BUSINESS_CLOCK_DISABLED=1 -> selalu REAL.
  *
  * now()/isTest() sekarang ASYNC karena membaca tabel business_clock.
  */
@@ -18,6 +20,11 @@ const businessClock = require("../businessClock");
 
 const ENABLED =
   businessClock.SIM_ENABLED ||
+  String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "1" ||
+  String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "true";
+
+// Override per-request: opt-in eksplisit via env, terpisah dari DB clock.
+const REQUEST_OVERRIDE_ENABLED =
   String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "1" ||
   String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "true";
 
@@ -32,7 +39,7 @@ function requestOverride(req) {
 }
 
 async function now(req) {
-  if (ENABLED) {
+  if (REQUEST_OVERRIDE_ENABLED) {
     // Worker/scheduler: override global via env
     const envNow = process.env.INSTALLMENT_TEST_NOW;
     if (envNow) {
@@ -53,7 +60,7 @@ async function now(req) {
  * plan sebagai isTest dan menyertakan plan test pada list.
  */
 async function isTest(req) {
-  if (ENABLED) {
+  if (REQUEST_OVERRIDE_ENABLED) {
     if (process.env.INSTALLMENT_TEST_NOW) return true;
     if (requestOverride(req) || req?.body?.is_test || req?.query?.is_test) {
       return true;

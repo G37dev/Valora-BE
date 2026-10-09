@@ -5,18 +5,17 @@
  * REAL mode    -> waktu server nyata.
  * SIMULATED    -> simulated_now dari tabel business_clock.
  *
- * Security rule (guide step 2): simulasi hanya aktif bila env
- * BUSINESS_CLOCK_SIM=1 diset. Tanpa env itu, mode selalu dipaksa REAL
- * dan admin endpoint menolak — production tidak bisa tersimulasi
- * secara tidak sengaja. Matikan/unset env ini untuk rilis produksi.
+ * Security rule (guide step 2): mode SIMULATED hanya bisa di-set lewat
+ * admin endpoint yang di-gate x-clock-key (lihat routes/clockRoutes.js).
+ * Default: diizinkan — environment ini adalah dev/staging.
+ * Production: set BUSINESS_CLOCK_DISABLED=1 untuk memaksa REAL selalu,
+ * apa pun isi tabel.
  */
 
 const { BusinessClock } = require("../models");
 
-const SIM_ENABLED =
-  String(process.env.BUSINESS_CLOCK_SIM || "") === "1" ||
-  String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "1" ||
-  String(process.env.INSTALLMENT_TEST_CLOCK || "").toLowerCase() === "true";
+const SIM_DISABLED = String(process.env.BUSINESS_CLOCK_DISABLED || "") === "1";
+const SIM_ENABLED = !SIM_DISABLED;
 
 const CLOCK_ROW_ID = 1;
 const CACHE_TTL_MS = 2000; // hemat query saat satu request memanggil current() berkali-kali
