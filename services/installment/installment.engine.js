@@ -274,7 +274,7 @@ async function markOverdueSchedules(plan, s, schedules, now, transaction) {
     item.set({ penaltyAccruedThroughAt: item.dueAt });
     queuePush(s, {
       title: "Installment Overdue",
-      body: `Cicilan #${item.sequence} sebesar ${fmtIdr(big(item.amountIdr) - big(item.paidIdr))} jatuh tempo ${fmtDateId(due)} dan belum dibayar. Denda keterlambatan 0.05%/hari sedang berjalan.`,
+      body: `Installment #${item.sequence} of ${fmtIdr(big(item.amountIdr) - big(item.paidIdr))} was due ${fmtDateId(due)} and is unpaid. Late penalty of 0.05%/day is accruing.`,
       data: {
         type: "installment",
         event: "overdue",
@@ -360,10 +360,10 @@ async function accrueCarrying(plan, s, effectiveAt, transaction) {
 async function markFullySettled(plan, s, effectiveAt, transaction) {
   const claimable = cal.isAfterOrEqual(effectiveAt, plan.claimableAt);
   queuePush(s, {
-    title: "Installment Selesai",
+    title: "Installment Complete",
     body: claimable
-      ? "Semua kewajiban lunas — aset kamu sudah bisa diklaim."
-      : `Semua kewajiban lunas. Aset bisa diklaim mulai ${fmtDateId(plan.claimableAt)}.`,
+      ? "All obligations settled — your asset is ready to claim."
+      : `All obligations settled. Your asset is claimable from ${fmtDateId(plan.claimableAt)}.`,
     data: { type: "installment", event: "settled", plan_id: String(plan.id) },
   });
   plan.set({
@@ -400,7 +400,7 @@ async function enterPastDue(plan, s, effectiveAt, transaction) {
   });
   queuePush(s, {
     title: "Plan Past Due",
-    body: `Plan kamu melewati jatuh tempo akhir. Lunasi sisa kewajiban sebelum ${fmtDateId(plan.cureEndsAt)} untuk menghindari likuidasi otomatis.`,
+    body: `Your plan passed its final due date. Settle the remaining obligation before ${fmtDateId(plan.cureEndsAt)} to avoid automatic liquidation.`,
     data: { type: "installment", event: "past_due", plan_id: String(plan.id) },
   });
   await ledger.recordEvent(
@@ -526,8 +526,8 @@ async function autoLiquidate(plan, s, effectiveAt, transaction) {
   plan.set({ calculationSnapshot: toJsonSafe(snapshot) });
 
   queuePush(s, {
-    title: "Plan Dilikuidasi",
-    body: `Plan kamu dilikuidasi otomatis. Refund ${fmtIdr(finalRefund)} sudah dikreditkan ke IDR wallet.`,
+    title: "Plan Liquidated",
+    body: `Your plan was automatically liquidated. A refund of ${fmtIdr(finalRefund)} has been credited to your IDR wallet.`,
     data: {
       type: "installment",
       event: "auto_liquidated",
@@ -675,7 +675,7 @@ async function activate(
 ) {
   if (plan.status !== STATUS.REQUEST_CREATED) {
     throw new InstallmentError(
-      `Plan tidak dalam status REQUEST_CREATED (${plan.status})`,
+      `Plan is not in REQUEST_CREATED status (${plan.status})`,
       {
         status: 409,
         code: "INVALID_STATE",
@@ -686,7 +686,7 @@ async function activate(
   const initial = big(plan.initialPaymentIdr);
   if (requestedAmount < initial) {
     throw new InstallmentError(
-      `Pembayaran awal harus tepat ${initial.toString()} IDR (DP)`,
+      `Initial payment must be exactly ${initial.toString()} IDR (DP)`,
       { code: "INITIAL_PAYMENT_MISMATCH", details: { required_idr: initial } },
     );
   }
@@ -838,16 +838,13 @@ async function applyPayment(
   const obligation = totalObligation(s);
 
   if (!isRunning(plan) && plan.status !== STATUS.PAST_DUE) {
-    throw new InstallmentError(
-      `Plan tidak dapat menerima pembayaran (${plan.status})`,
-      {
-        status: 409,
-        code: "INVALID_STATE",
-      },
-    );
+    throw new InstallmentError(`Plan cannot accept payment (${plan.status})`, {
+      status: 409,
+      code: "INVALID_STATE",
+    });
   }
   if (obligation <= 0n) {
-    throw new InstallmentError("Tidak ada kewajiban tersisa", {
+    throw new InstallmentError("No remaining obligation", {
       status: 409,
       code: "NOTHING_TO_PAY",
     });
@@ -858,7 +855,7 @@ async function applyPayment(
     // 9.2: tidak ada partial payment selama Cure
     if (requestedAmount < obligation) {
       throw new InstallmentError(
-        `Selama Cure Period hanya pelunasan penuh yang diizinkan: ${obligation.toString()} IDR`,
+        `During the Cure Period only full settlement is allowed: ${obligation.toString()} IDR`,
         {
           code: "FULL_SETTLEMENT_REQUIRED",
           details: { required_idr: obligation },
@@ -870,7 +867,7 @@ async function applyPayment(
     const minAllowed = minBig(RULES.MIN_PAYMENT_IDR, obligation);
     if (requestedAmount < minAllowed) {
       throw new InstallmentError(
-        `Pembayaran minimum ${minAllowed.toString()} IDR`,
+        `Minimum payment is ${minAllowed.toString()} IDR`,
         { code: "BELOW_MINIMUM_PAYMENT", details: { min_idr: minAllowed } },
       );
     }
@@ -940,7 +937,7 @@ async function cancel(plan, s, effectiveAt, transaction) {
   const pc = completionBps(plan, s);
   if (plan.status !== STATUS.ACTIVE || pc > RULES.CANCEL_MAX_PC_BPS) {
     throw new InstallmentError(
-      "Cancellation tidak tersedia (hanya saat ACTIVE dan Payment Completion <= 50%)",
+      "Cancellation is not available (only while ACTIVE and Payment Completion <= 50%)",
       {
         status: 409,
         code: "CANCELLATION_NOT_AVAILABLE",
@@ -1051,13 +1048,13 @@ async function restructure(plan, s, effectiveAt, transaction) {
 
   if (!isFlexible(plan)) {
     throw new InstallmentError(
-      "Restructure hanya tersedia untuk plan Flexible",
+      "Restructure is only available for Flexible plans",
       { status: 409, code: "RESTRUCTURE_NOT_AVAILABLE" },
     );
   }
   if (plan.status !== STATUS.PAST_DUE || now >= cal.toDate(plan.cureEndsAt)) {
     throw new InstallmentError(
-      "Restructure hanya tersedia selama Cure Period",
+      "Restructure is only available during the Cure Period",
       {
         status: 409,
         code: "RESTRUCTURE_NOT_AVAILABLE",
@@ -1065,14 +1062,14 @@ async function restructure(plan, s, effectiveAt, transaction) {
     );
   }
   if (plan.restructureStartedAt) {
-    throw new InstallmentError("Restructure hanya boleh satu kali", {
+    throw new InstallmentError("Restructure is only allowed once", {
       status: 409,
       code: "RESTRUCTURE_ALREADY_USED",
     });
   }
   if (pc <= RULES.RESTRUCTURE_MIN_PC_BPS) {
     throw new InstallmentError(
-      "Restructure memerlukan Payment Completion > 80%",
+      "Restructure requires Payment Completion > 80%",
       {
         status: 409,
         code: "RESTRUCTURE_NOT_ELIGIBLE",

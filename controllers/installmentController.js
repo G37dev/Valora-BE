@@ -26,7 +26,7 @@ function handleError(res, error, context) {
   console.error(`[Installment] ${context} error:`, error);
   return res.status(500).json({
     success: false,
-    message: `Gagal ${context}`,
+    message: `Failed while ${context}`,
     error: error.message,
   });
 }
@@ -36,7 +36,7 @@ function requireCoreId(req, res) {
   if (!coreId) {
     res
       .status(401)
-      .json({ success: false, message: "coreId tidak ditemukan di token" });
+      .json({ success: false, message: "coreId not found in token" });
     return null;
   }
   return coreId;
@@ -70,7 +70,7 @@ const quote = async (req, res) => {
     });
     return res.status(200).json({ success: true, data });
   } catch (error) {
-    return handleError(res, error, "menghitung quote");
+    return handleError(res, error, "calculating quote");
   }
 };
 
@@ -92,14 +92,14 @@ const createRequest = async (req, res) => {
     return res.status(created ? 201 : 200).json({
       success: true,
       message: !created
-        ? "Request sudah pernah dibuat (idempotent)."
+        ? "Request already created (idempotent)."
         : plan.status === "ACTIVE"
-          ? "Plan aktif. Cicilan pertama jatuh tempo pada interval pertama."
-          : "Request installment dibuat. Bayar DP sebelum kedaluwarsa.",
+          ? "Plan active. First installment is due at the first interval."
+          : "Installment request created. Pay the down payment before it expires.",
       data: service.serializePlan(plan, { at: await clock.now(req) }),
     });
   } catch (error) {
-    return handleError(res, error, "membuat request installment");
+    return handleError(res, error, "creating installment request");
   }
 };
 
@@ -122,8 +122,8 @@ const pay = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: duplicate
-        ? "Pembayaran sudah diproses sebelumnya (idempotent)."
-        : "Pembayaran berhasil.",
+        ? "Payment already processed (idempotent)."
+        : "Payment successful.",
       data: toJsonSafe({
         payment: {
           id: payment.id,
@@ -139,7 +139,7 @@ const pay = async (req, res) => {
       }),
     });
   } catch (error) {
-    return handleError(res, error, "memproses pembayaran");
+    return handleError(res, error, "processing payment");
   }
 };
 
@@ -156,7 +156,7 @@ const cancel = async (req, res) => {
     });
     return res.status(200).json({
       success: true,
-      message: "Plan dibatalkan. Refund dikreditkan ke internal wallet.",
+      message: "Plan cancelled. Refund credited to your internal wallet.",
       data: toJsonSafe({
         cancellation: {
           rate_bps: result.rateBps,
@@ -168,7 +168,7 @@ const cancel = async (req, res) => {
       }),
     });
   } catch (error) {
-    return handleError(res, error, "membatalkan plan");
+    return handleError(res, error, "cancelling plan");
   }
 };
 
@@ -196,7 +196,7 @@ const restructure = async (req, res) => {
       }),
     });
   } catch (error) {
-    return handleError(res, error, "melakukan restructure");
+    return handleError(res, error, "restructuring plan");
   }
 };
 
@@ -217,7 +217,7 @@ const listPlans = async (req, res) => {
     });
     return res.status(200).json({ success: true, data });
   } catch (error) {
-    return handleError(res, error, "memuat daftar installment");
+    return handleError(res, error, "loading installment list");
   }
 };
 
@@ -234,7 +234,7 @@ const getPlanDetail = async (req, res) => {
     });
     return res.status(200).json({ success: true, data });
   } catch (error) {
-    return handleError(res, error, "memuat detail installment");
+    return handleError(res, error, "loading installment detail");
   }
 };
 

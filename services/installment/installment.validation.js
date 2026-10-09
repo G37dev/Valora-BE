@@ -15,7 +15,7 @@ function normalizeAsset(asset) {
     .replace(/[\s-]+/g, "_");
   const normalized = ASSET_ALIASES[key];
   if (!normalized) {
-    throw new InstallmentError(`Asset tidak didukung: ${asset}`, {
+    throw new InstallmentError(`Unsupported asset: ${asset}`, {
       code: "ASSET_NOT_SUPPORTED",
     });
   }
@@ -27,7 +27,7 @@ function parsePlanType(planType) {
     .trim()
     .toUpperCase();
   if (!PLAN_TYPE[value]) {
-    throw new InstallmentError("plan_type harus STANDARD atau FLEXIBLE", {
+    throw new InstallmentError("plan_type must be STANDARD or FLEXIBLE", {
       code: "INVALID_PLAN_TYPE",
     });
   }
@@ -38,7 +38,7 @@ function parseTenor(tenor) {
   const value = Number(tenor);
   if (!TENOR_MONTHS.includes(value)) {
     throw new InstallmentError(
-      `tenor_months harus salah satu dari ${TENOR_MONTHS.join("/")}`,
+      `tenor_months must be one of ${TENOR_MONTHS.join("/")}`,
       { code: "INVALID_TENOR" },
     );
   }
@@ -50,14 +50,14 @@ function parseGap(gap) {
     .trim()
     .toUpperCase();
   if (!INSTALLMENT_GAP[value]) {
-    throw new InstallmentError("installment_gap harus WEEKLY atau MONTHLY", {
+    throw new InstallmentError("installment_gap must be WEEKLY or MONTHLY", {
       code: "INVALID_GAP",
     });
   }
   return value;
 }
 
-/** Gold amount dalam gram; string decimal positif, maksimal 18 desimal. */
+/** Asset/token quantity; positive decimal string, max 18 decimal places. */
 function parseGoldAmount(amount) {
   let value;
   try {
@@ -66,12 +66,12 @@ function parseGoldAmount(amount) {
     value = null;
   }
   if (!value || !value.isFinite() || value.lte(0)) {
-    throw new InstallmentError("gold_amount harus angka positif (gram)", {
+    throw new InstallmentError("gold_amount must be a positive number", {
       code: "INVALID_GOLD_AMOUNT",
     });
   }
   if (value.decimalPlaces() > 18) {
-    throw new InstallmentError("gold_amount maksimal 18 desimal", {
+    throw new InstallmentError("gold_amount max 18 decimal places", {
       code: "INVALID_GOLD_AMOUNT",
     });
   }
@@ -85,12 +85,20 @@ function parseDpBps({ dp_bps, dp_percent }) {
   let bps;
   if (dp_bps !== undefined && dp_bps !== null && dp_bps !== "") {
     bps = Number(dp_bps);
-  } else if (dp_percent !== undefined && dp_percent !== null && dp_percent !== "") {
+  } else if (
+    dp_percent !== undefined &&
+    dp_percent !== null &&
+    dp_percent !== ""
+  ) {
     bps = Math.round(Number(dp_percent) * 100);
   }
-  if (!Number.isInteger(bps) || bps < RULES.DP_MIN_BPS || bps > RULES.DP_MAX_BPS) {
+  if (
+    !Number.isInteger(bps) ||
+    bps < RULES.DP_MIN_BPS ||
+    bps > RULES.DP_MAX_BPS
+  ) {
     throw new InstallmentError(
-      `Down Payment harus antara ${RULES.DP_MIN_BPS / 100}% dan ${RULES.DP_MAX_BPS / 100}%`,
+      `Down Payment must be between ${RULES.DP_MIN_BPS / 100}% and ${RULES.DP_MAX_BPS / 100}%`,
       { code: "INVALID_DP" },
     );
   }
@@ -101,7 +109,7 @@ function parseDpBps({ dp_bps, dp_percent }) {
 function parseIdrAmount(amount, field = "amount_idr") {
   const str = String(amount ?? "").trim();
   if (!/^\d+$/.test(str) || BigInt(str) <= 0n) {
-    throw new InstallmentError(`${field} harus bilangan bulat rupiah positif`, {
+    throw new InstallmentError(`${field} must be a positive IDR integer`, {
       code: "INVALID_AMOUNT",
     });
   }
@@ -111,9 +119,12 @@ function parseIdrAmount(amount, field = "amount_idr") {
 function requireIdempotencyKey(key) {
   const value = String(key || "").trim();
   if (!value || value.length > 128) {
-    throw new InstallmentError("idempotency_key wajib diisi (maks 128 karakter)", {
-      code: "INVALID_IDEMPOTENCY_KEY",
-    });
+    throw new InstallmentError(
+      "idempotency_key wajib diisi (maks 128 karakter)",
+      {
+        code: "INVALID_IDEMPOTENCY_KEY",
+      },
+    );
   }
   return value;
 }

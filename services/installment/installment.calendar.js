@@ -20,7 +20,7 @@ const MS_PER_DAY = 86_400_000;
 function toDate(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw new Error(`Tanggal tidak valid: ${value}`);
+    throw new Error(`Invalid date: ${value}`);
   }
   return date;
 }

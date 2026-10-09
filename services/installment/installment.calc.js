@@ -79,7 +79,7 @@ function standardMarkupBps(asset, tenorMonths) {
   const bps = STANDARD_MARKUP_BPS[asset]?.[tenorMonths];
   if (bps === undefined) {
     throw new Error(
-      `Markup Standard tidak tersedia untuk ${asset}/${tenorMonths}M`,
+      `Standard markup not available for ${asset}/${tenorMonths}M`,
     );
   }
   return bps;
@@ -88,7 +88,7 @@ function standardMarkupBps(asset, tenorMonths) {
 function priceLockMarginBps(tenorMonths) {
   const bps = PRICE_LOCK_MARGIN_BPS[tenorMonths];
   if (bps === undefined) {
-    throw new Error(`Price-Lock Margin tidak tersedia untuk ${tenorMonths}M`);
+    throw new Error(`Price-Lock Margin not available for ${tenorMonths}M`);
   }
   return bps;
 }
@@ -96,9 +96,7 @@ function priceLockMarginBps(tenorMonths) {
 function restructureExtensionMonths(tenorMonths) {
   const months = RESTRUCTURE_EXTENSION_MONTHS[tenorMonths];
   if (months === undefined) {
-    throw new Error(
-      `Restructure extension tidak tersedia untuk ${tenorMonths}M`,
-    );
+    throw new Error(`Restructure extension not available for ${tenorMonths}M`);
   }
   return months;
 }
@@ -214,7 +212,7 @@ function flexibleQuote({
   const dp = Number(dpBps);
   if (!Number.isInteger(dp) || dp < RULES.DP_MIN_BPS || dp > RULES.DP_MAX_BPS) {
     throw new Error(
-      `Down Payment harus antara ${RULES.DP_MIN_BPS / 100}% dan ${RULES.DP_MAX_BPS / 100}%`,
+      `Down Payment must be between ${RULES.DP_MIN_BPS / 100}% and ${RULES.DP_MAX_BPS / 100}%`,
     );
   }
 

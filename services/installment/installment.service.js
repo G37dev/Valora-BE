@@ -43,6 +43,15 @@ function withTransaction(transaction, fn) {
 
 const fmtIdr = (v) => `Rp ${Number(v).toLocaleString("id-ID")}`;
 
+// Token amount: trim trailing zeros — "10.000000" -> "10", "10.470000" -> "10.47"
+const fmtToken = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v ?? "0");
+  return n.toLocaleString("en-US", { maximumFractionDigits: 6 });
+};
+
+const tokenUnit = (assetCode) => (assetCode === "XAUT" ? "XAUT" : "VVLR");
+
 const fmtDateId = (d) =>
   new Intl.DateTimeFormat("id-ID", {
     day: "numeric",
@@ -80,14 +89,14 @@ async function sendInstallmentPush(coreId, push) {
 async function lockPrice(asset) {
   const row = await Price.findOne({ where: { asset } });
   if (!row) {
-    throw new InstallmentError(`Harga ${asset} belum tersedia`, {
+    throw new InstallmentError(`Price for ${asset} is not available`, {
       status: 503,
       code: "PRICE_UNAVAILABLE",
     });
   }
   const ageMs = Date.now() - new Date(row.updatedAt).getTime();
   if (MAX_PRICE_AGE_MS > 0 && ageMs > MAX_PRICE_AGE_MS) {
-    throw new InstallmentError(`Harga ${asset} sudah kedaluwarsa, coba lagi`, {
+    throw new InstallmentError(`Price for ${asset} is stale, please retry`, {
       status: 503,
       code: "PRICE_STALE",
       details: { age_ms: ageMs },
@@ -140,7 +149,7 @@ async function lockPlan(planId, coreId, transaction) {
     lock: transaction.LOCK.UPDATE,
   });
   if (!plan) {
-    throw new InstallmentError("Plan tidak ditemukan", {
+    throw new InstallmentError("Plan not found", {
       status: 404,
       code: "PLAN_NOT_FOUND",
     });
@@ -175,7 +184,7 @@ async function findExistingPlan(idempotencyKey, coreId, transaction) {
     transaction,
   });
   if (existing && existing.coreId !== coreId) {
-    throw new InstallmentError("idempotency_key sudah dipakai", {
+    throw new InstallmentError("idempotency_key already used", {
       status: 409,
       code: "IDEMPOTENCY_CONFLICT",
     });
@@ -201,7 +210,7 @@ async function createRequest({
 
   if (input.planType === PLAN_TYPE.STANDARD && !q.meetsMinimum) {
     throw new InstallmentError(
-      `Setiap installment harus >= ${RULES.MIN_INSTALLMENT_IDR.toString()} IDR. Minimum gold_amount: ${q.minGoldAmount} gram`,
+      `Each installment must be >= ${RULES.MIN_INSTALLMENT_IDR.toString()} IDR. Minimum amount: ${q.minGoldAmount} ${tokenUnit(input.asset)}`,
       {
         code: "BELOW_MINIMUM_INSTALLMENT",
         details: {
@@ -299,8 +308,8 @@ async function createRequest({
       plan.coreId,
       plan.status === STATUS.ACTIVE
         ? {
-            title: "Installment Aktif",
-            body: `Plan ${isStandard ? "Standard" : "Flexible"} ${plan.goldAmount}g ${plan.assetCode} sudah aktif. Total pembayaran ${fmtIdr(plan.standardTotalPaymentIdr ?? plan.lockedPlanValueIdr)}.`,
+            title: "Installment Active",
+            body: `Your ${isStandard ? "Standard" : "Flexible"} plan for ${fmtToken(plan.goldAmount)} ${tokenUnit(plan.assetCode)} is now active. Total payment ${fmtIdr(plan.standardTotalPaymentIdr ?? plan.lockedPlanValueIdr)}.`,
             data: {
               type: "installment",
               event: "activated",
@@ -308,8 +317,8 @@ async function createRequest({
             },
           }
         : {
-            title: "Menunggu Pembayaran",
-            body: `Bayar ${fmtIdr(plan.initialPaymentIdr)} sebelum ${fmtDateId(plan.requestExpiresAt)} untuk mengaktifkan plan installment kamu.`,
+            title: "Awaiting Payment",
+            body: `Pay ${fmtIdr(plan.initialPaymentIdr)} before ${fmtDateId(plan.requestExpiresAt)} to activate your installment plan.`,
             data: {
               type: "installment",
               event: "request_created",
@@ -344,7 +353,7 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
     });
     if (duplicate) {
       if (duplicate.coreId !== coreId || duplicate.planId !== planId) {
-        throw new InstallmentError("idempotency_key sudah dipakai", {
+        throw new InstallmentError("idempotency_key already used", {
           status: 409,
           code: "IDEMPOTENCY_CONFLICT",
         });
@@ -362,7 +371,7 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
       TERMINAL_STATUSES.includes(plan.status) ||
       plan.status === STATUS.REQUEST_EXPIRED
     ) {
-      throw new InstallmentError(`Plan sudah ${plan.status}`, {
+      throw new InstallmentError(`Plan is already ${plan.status}`, {
         status: 409,
         code: "INVALID_STATE",
       });
@@ -445,8 +454,8 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
     await dispatchPushes(out.plan, sRef);
     if (!out.duplicate) {
       await sendInstallmentPush(coreId, {
-        title: "Pembayaran Diterima",
-        body: `Pembayaran ${fmtIdr(out.payment.amountIdr)} berhasil. Sisa kewajiban: ${fmtIdr(out.plan.principalOutstandingIdr)}.`,
+        title: "Payment Received",
+        body: `Payment of ${fmtIdr(out.payment.amountIdr)} received. Remaining obligation: ${fmtIdr(out.plan.principalOutstandingIdr)}.`,
         data: {
           type: "installment",
           event: "payment_applied",
@@ -786,7 +795,7 @@ async function listPlans({
 async function getPlanDetail({ coreId, planId, now = new Date() }) {
   let plan = await InstallmentPlan.findOne({ where: { id: planId, coreId } });
   if (!plan) {
-    throw new InstallmentError("Plan tidak ditemukan", {
+    throw new InstallmentError("Plan not found", {
       status: 404,
       code: "PLAN_NOT_FOUND",
     });
