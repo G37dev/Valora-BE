@@ -889,8 +889,8 @@ const getTopUpStatus = async (req, res) => {
         "failureReason",
         "paidAt",
         "callbackPayload",
-        "createdAt",
-        "updatedAt",
+        "created_at",
+        "updated_at",
       ],
     });
 
@@ -996,7 +996,7 @@ const listTopUps = async (req, res) => {
         "paidAt",
         "snapToken",
         "rawResponse",
-        "createdAt",
+        "created_at",
       ],
     });
 
@@ -1011,7 +1011,7 @@ const listTopUps = async (req, res) => {
         paymentMethod: j.paymentMethod,
         expiredAt: j.expiredAt,
         paidAt: j.paidAt,
-        createdAt: j.createdAt,
+        createdAt: j.created_at || j.createdAt,
         // redirectUrl hanya relevan untuk resume transaksi PENDING.
         redirectUrl:
           j.status === "PENDING" ? j.rawResponse?.redirectUrl || null : null,
