@@ -23,9 +23,17 @@ const {
   TERMINAL_STATUSES,
 } = require("./installment.constants");
 
+const Decimal = require("decimal.js");
+
 const MAX_PRICE_AGE_MS = Number(
   process.env.INSTALLMENT_MAX_PRICE_AGE_MS ?? 10 * 60 * 1000,
 );
+
+// Price table stores gold-backed assets per GRAM (see priceController:
+// Indodax XAUT/oz is divided by 31.1035). Installment amounts are token
+// units — for XAUT, 1 token = 1 troy ounce — so the locked price must be
+// converted back to per-ounce before quoting. Same convention as swap.
+const OZ_TO_GRAMS = new Decimal("31.1035");
 
 // ============================================================
 // Helpers
@@ -102,8 +110,12 @@ async function lockPrice(asset) {
       details: { age_ms: ageMs },
     });
   }
+  const pricePerUnit =
+    asset === "XAUT"
+      ? new Decimal(String(row.priceIdr)).mul(OZ_TO_GRAMS)
+      : new Decimal(String(row.priceIdr));
   return {
-    priceIdr: String(row.priceIdr),
+    priceIdr: pricePerUnit.toFixed(0),
     source: row.source,
     updatedAt: row.updatedAt,
   };
