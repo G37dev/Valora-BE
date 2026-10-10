@@ -69,7 +69,7 @@ const createMidtransTopUp = async (req, res) => {
     if (numericAmount < 10000) {
       return res.status(400).json({
         success: false,
-        message: "Minimum deposit IDR adalah Rp10.000",
+        message: "Minimum deposit IDR adalah 10.000 IDR",
       });
     }
 

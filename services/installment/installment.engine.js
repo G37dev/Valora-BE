@@ -65,7 +65,7 @@ function queuePush(s, push) {
   if (Array.isArray(s.pushes)) s.pushes.push(push);
 }
 
-const fmtIdr = (v) => `Rp ${Number(big(v)).toLocaleString("id-ID")}`;
+const fmtIdr = (v) => `${Number(big(v)).toLocaleString("id-ID")} IDR`;
 
 const fmtDateId = (d) =>
   new Intl.DateTimeFormat("id-ID", {

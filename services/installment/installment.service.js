@@ -49,7 +49,7 @@ function withTransaction(transaction, fn) {
     : sequelize.transaction(fn);
 }
 
-const fmtIdr = (v) => `Rp ${Number(v).toLocaleString("id-ID")}`;
+const fmtIdr = (v) => `${Number(v).toLocaleString("id-ID")} IDR`;
 
 // Token amount: trim trailing zeros — "10.000000" -> "10", "10.470000" -> "10.47"
 const fmtToken = (v) => {
