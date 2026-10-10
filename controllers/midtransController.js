@@ -258,6 +258,11 @@ const createMidtransTopUp = async (req, res) => {
 
     await topUp.update({
       providerPaymentId: payment.orderId || topUp.refNo,
+      snapToken: payment.token || null,
+      rawResponse: {
+        redirectUrl: payment.redirectUrl || null,
+        orderId: payment.orderId || null,
+      },
     });
 
     // ========================================================
@@ -961,6 +966,68 @@ const renderMidtransCheckout = async (req, res) => {
 // EXPORT
 // ============================================================
 
+// ============================================================
+// LIST TOP UPS (history + pending) milik user yang login
+// ============================================================
+
+const listTopUps = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+
+    if (!coreId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const topUps = await TopUp.findAll({
+      where: { coreId: String(coreId) },
+      order: [["created_at", "DESC"]],
+      limit: 50,
+      attributes: [
+        "id",
+        "refNo",
+        "amountIdr",
+        "currency",
+        "status",
+        "paymentMethod",
+        "expiredAt",
+        "paidAt",
+        "snapToken",
+        "rawResponse",
+        "createdAt",
+      ],
+    });
+
+    const data = topUps.map((t) => {
+      const j = t.toJSON();
+      return {
+        id: j.id,
+        refNo: j.refNo,
+        amountIdr: j.amountIdr,
+        currency: j.currency,
+        status: j.status,
+        paymentMethod: j.paymentMethod,
+        expiredAt: j.expiredAt,
+        paidAt: j.paidAt,
+        createdAt: j.createdAt,
+        // redirectUrl hanya relevan untuk resume transaksi PENDING.
+        redirectUrl:
+          j.status === "PENDING" ? j.rawResponse?.redirectUrl || null : null,
+      };
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error("[Midtrans] List TopUps error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to list top ups",
+    });
+  }
+};
+
 module.exports = {
   createMidtransTopUp,
 
@@ -971,4 +1038,6 @@ module.exports = {
   renderMidtransCheckout,
 
   getTopUpStatus,
+
+  listTopUps,
 };
