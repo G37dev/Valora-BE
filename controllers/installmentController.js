@@ -200,6 +200,37 @@ const restructure = async (req, res) => {
   }
 };
 
+/** @route POST /api/installments/:plan_id/claim */
+const claim = async (req, res) => {
+  try {
+    const coreId = requireCoreId(req, res);
+    if (!coreId) return;
+
+    const { plan, txHash, beneficiary, duplicate } = await service.claim({
+      coreId,
+      planId: req.params.plan_id,
+      now: await clock.now(req),
+    });
+    return res.status(200).json({
+      success: true,
+      message: duplicate
+        ? "Asset already claimed (idempotent)."
+        : "Asset claimed successfully.",
+      data: toJsonSafe({
+        claim: {
+          release_tx_hash: txHash,
+          beneficiary,
+          asset: plan.assetCode,
+          amount_token: plan.goldAmount,
+        },
+        plan: service.serializePlan(plan, { at: await clock.now(req) }),
+      }),
+    });
+  } catch (error) {
+    return handleError(res, error, "processing claim");
+  }
+};
+
 /** @route GET /api/installments?status= */
 const listPlans = async (req, res) => {
   try {
@@ -245,6 +276,7 @@ module.exports = {
   pay,
   cancel,
   restructure,
+  claim,
   listPlans,
   getPlanDetail,
 };

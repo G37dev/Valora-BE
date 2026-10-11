@@ -5,11 +5,13 @@ const {
   InstallmentSchedule,
   InstallmentPayment,
   InstallmentEvent,
+  InternalWallet,
 } = require("../../models");
 const calc = require("./installment.calc");
 const cal = require("./installment.calendar");
 const engine = require("./installment.engine");
 const ledger = require("./installment.ledger");
+const bc = require("./installment.blockchain.service");
 const v = require("./installment.validation");
 const { InstallmentError, toJsonSafe } = require("./installment.errors");
 const pushService = require("../pushService");
@@ -21,6 +23,8 @@ const {
   EVENT,
   PAYMENT_KIND,
   TERMINAL_STATUSES,
+  PROTOCOL_FEE_STATUS,
+  REV_ID,
 } = require("./installment.constants");
 
 const Decimal = require("decimal.js");
@@ -91,6 +95,41 @@ async function sendInstallmentPush(coreId, push) {
     await pushService.sendPushToUser(coreId, push);
   } catch (error) {
     console.log(`[Installment] push gagal core ${coreId}:`, error.message);
+  }
+}
+
+/**
+ * Operasi on-chain yang di-queue engine selama settle (s.chainOps).
+ * Dipanggil SETELAH transaction commit — best-effort: kegagalan chain
+ * hanya di-log, tidak me-rollback state DB. Claim endpoint punya
+ * ensure-allocation sendiri sehingga allocate yang gagal di sini
+ * tetap bisa di-retry lewat jalur claim.
+ */
+async function dispatchChainOps(plan, s) {
+  for (const op of s?.chainOps ?? []) {
+    try {
+      if (op.type === "ALLOCATE") {
+        const beneficiary = await bc.getBeneficiaryAddress(plan.coreId);
+        if (!beneficiary) {
+          console.log(
+            `[Installment Chain] allocate skip plan ${plan.id}: wallet on-chain belum ada`,
+          );
+          continue;
+        }
+        const txHash = await bc.allocatePlanOnChain(plan, beneficiary);
+        console.log(`[Installment Chain] allocate plan ${plan.id}: ${txHash}`);
+      } else if (op.type === "RECLAIM") {
+        const onchain = await bc.readOnchainPlan(plan);
+        if (onchain.status !== bc.ONCHAIN_STATUS.ALLOCATED) continue;
+        const txHash = await bc.reclaimPlanOnChain(plan);
+        console.log(`[Installment Chain] reclaim plan ${plan.id}: ${txHash}`);
+      }
+    } catch (error) {
+      console.error(
+        `[Installment Chain] ${op.type} plan ${plan.id} gagal:`,
+        error.message,
+      );
+    }
   }
 }
 
@@ -236,6 +275,7 @@ async function createRequest({
   const isStandard = input.planType === PLAN_TYPE.STANDARD;
   const protocolFee = calc.protocolFee(q.assetValue);
 
+  let sRef = null;
   let plan;
   try {
     plan = await withTransaction(transaction, async (t) => {
@@ -299,6 +339,7 @@ async function createRequest({
       // request creation, cicilan pertama jatuh tempo di interval pertama.
       if (isStandard) {
         const s = engine.loadState(created);
+        sRef = s;
         const schedules = [];
         await engine.activate(created, s, schedules, 0n, now, t);
         await engine.persist(created, s, schedules, now, t);
@@ -316,6 +357,7 @@ async function createRequest({
   }
 
   if (!transaction) {
+    await dispatchChainOps(plan, sRef);
     await sendInstallmentPush(
       plan.coreId,
       plan.status === STATUS.ACTIVE
@@ -464,6 +506,7 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
 
   if (!transaction) {
     await dispatchPushes(out.plan, sRef);
+    await dispatchChainOps(out.plan, sRef);
     if (!out.duplicate) {
       await sendInstallmentPush(coreId, {
         title: "Payment Received",
@@ -488,9 +531,11 @@ async function pay({ coreId, planId, body, now = new Date(), transaction }) {
 async function cancel({ coreId, planId, now = new Date(), transaction }) {
   await settlePlan(planId, now, transaction);
 
-  return withTransaction(transaction, async (t) => {
+  let sRef = null;
+  const out = await withTransaction(transaction, async (t) => {
     const plan = await lockPlan(planId, coreId, t);
     const s = engine.loadState(plan);
+    sRef = s;
     const schedules = await engine.loadSchedules(plan, t);
 
     await engine.settleToNow(plan, s, schedules, now, t);
@@ -499,6 +544,8 @@ async function cancel({ coreId, planId, now = new Date(), transaction }) {
 
     return { plan, result };
   });
+  if (!transaction) await dispatchChainOps(out.plan, sRef);
+  return out;
 }
 
 async function restructure({ coreId, planId, now = new Date(), transaction }) {
@@ -515,6 +562,210 @@ async function restructure({ coreId, planId, now = new Date(), transaction }) {
 
     return { plan, result };
   });
+}
+
+// ============================================================
+// Claim (release asset on-chain)
+// ============================================================
+
+/**
+ * Claim asset plan yang sudah CLAIMABLE.
+ * Urutan: validasi -> cek fee & beneficiary -> on-chain allocate (jika
+ * perlu) + releaseClaim -> finalisasi DB (fee debit, CLOSED, tx hash).
+ * Idempotent: plan CLOSED / chain CLAIMED langsung di-return tanpa tx baru.
+ */
+async function claim({ coreId, planId, now = new Date(), transaction }) {
+  await settlePlan(planId, now, transaction);
+
+  const plan = await InstallmentPlan.findOne({
+    where: { id: planId, coreId },
+  });
+  if (!plan) {
+    throw new InstallmentError("Plan not found", {
+      status: 404,
+      code: "PLAN_NOT_FOUND",
+    });
+  }
+
+  if (plan.status === STATUS.CLOSED && plan.releaseTxHash) {
+    return { plan, txHash: plan.releaseTxHash, duplicate: true };
+  }
+
+  if (plan.status === STATUS.COMPLETE_PENDING_CLAIM) {
+    throw new InstallmentError(
+      `Asset will be claimable from ${fmtDateId(plan.claimableAt)}`,
+      {
+        status: 409,
+        code: "NOT_CLAIMABLE_YET",
+        details: { claimable_at: plan.claimableAt },
+      },
+    );
+  }
+  if (plan.status !== STATUS.CLAIMABLE) {
+    throw new InstallmentError(`Plan is not claimable (${plan.status})`, {
+      status: 409,
+      code: "NOT_CLAIMABLE",
+    });
+  }
+
+  const beneficiary = await bc.getBeneficiaryAddress(coreId);
+  if (!beneficiary) {
+    throw new InstallmentError(
+      "On-chain wallet address not found for this account",
+      { status: 409, code: "WALLET_NOT_FOUND" },
+    );
+  }
+
+  // Fee protokol didebit dari wallet IDR — cek saldo DULU supaya release
+  // on-chain tidak tereksekusi lalu gagal debit.
+  const protocolFee = calc.big(plan.protocolFeeIdr ?? 0);
+  const feeDue =
+    protocolFee > 0n && plan.protocolFeeStatus !== PROTOCOL_FEE_STATUS.CHARGED;
+  if (feeDue) {
+    const wallet = await InternalWallet.findOne({ where: { coreId } });
+    const balance = calc.big(new Decimal(wallet?.balanceIdr ?? 0).toFixed(0));
+    if (balance < protocolFee) {
+      throw new InstallmentError(
+        `Insufficient IDR balance for claim fee (${fmtIdr(protocolFee)})`,
+        {
+          status: 402,
+          code: "INSUFFICIENT_BALANCE",
+          details: {
+            balance_idr: balance.toString(),
+            required_idr: protocolFee.toString(),
+          },
+        },
+      );
+    }
+  }
+
+  // Pastikan alokasi on-chain ada (plan lama / allocate gagal saat aktivasi),
+  // lalu release ke beneficiary. Kalau chain sudah CLAIMED tapi DB belum,
+  // cukup finalisasi DB (idempotent sync).
+  const amountRaw = bc.tokenAmountRaw(plan);
+  let releaseTxHash = null;
+  try {
+    const onchain = await bc.readOnchainPlan(plan);
+    if (onchain.status === bc.ONCHAIN_STATUS.VOID) {
+      throw new InstallmentError(
+        "Plan allocation was already voided on-chain",
+        { status: 409, code: "ALLOCATION_VOID" },
+      );
+    }
+    if (onchain.status === bc.ONCHAIN_STATUS.NONE) {
+      await bc.allocatePlanOnChain(plan, beneficiary);
+    }
+    if (onchain.status !== bc.ONCHAIN_STATUS.CLAIMED) {
+      releaseTxHash = await bc.releaseClaimOnChain(plan);
+    }
+  } catch (error) {
+    if (error instanceof InstallmentError) throw error;
+    throw new InstallmentError(
+      "Asset release failed on-chain. Please try again.",
+      {
+        status: 502,
+        code: "CHAIN_RELEASE_FAILED",
+        details: { error: error.message },
+      },
+    );
+  }
+
+  const out = await withTransaction(transaction, async (t) => {
+    const locked = await lockPlan(planId, coreId, t);
+    if (locked.status === STATUS.CLOSED) {
+      return { plan: locked, duplicate: true };
+    }
+    if (locked.status !== STATUS.CLAIMABLE) {
+      throw new InstallmentError(`Plan is not claimable (${locked.status})`, {
+        status: 409,
+        code: "NOT_CLAIMABLE",
+      });
+    }
+
+    if (feeDue) {
+      const debit = await ledger.debitWallet(
+        {
+          coreId,
+          amount: protocolFee,
+          reference: `INSTALLMENT-CLAIM-FEE-${plan.id}`,
+          description: `Protocol fee claim Gold Installment ${plan.assetCode}`,
+          metadata: { planId: plan.id, protocol_fee_bps: plan.protocolFeeBps },
+        },
+        t,
+      );
+      await ledger.recordRevenue(
+        locked,
+        {
+          revId: REV_ID.PROTOCOL_FEE,
+          amount: protocolFee,
+          rateBps: plan.protocolFeeBps,
+          base: calc.big(plan.assetValueIdr ?? 0),
+          effectiveAt: now,
+          sourceTransactionId: debit.id,
+          metadata: { trigger: "CLAIM" },
+        },
+        t,
+      );
+      await ledger.recordEvent(
+        locked,
+        {
+          eventType: EVENT.PROTOCOL_FEE_CHARGED,
+          effectiveAt: now,
+          metadata: {
+            protocol_fee_idr: protocolFee,
+            transaction_id: debit.id,
+          },
+        },
+        t,
+      );
+    }
+
+    locked.set({
+      status: STATUS.CLOSED,
+      closedAt: now,
+      releaseTxHash: releaseTxHash ?? locked.releaseTxHash,
+      protocolFeeStatus: PROTOCOL_FEE_STATUS.CHARGED,
+      nextEventAt: null,
+    });
+    await locked.save({ transaction: t });
+
+    await ledger.recordEvent(
+      locked,
+      {
+        eventType: EVENT.ASSET_RELEASED,
+        effectiveAt: now,
+        metadata: {
+          tx_hash: releaseTxHash,
+          beneficiary,
+          asset: plan.assetCode,
+          amount_token: String(plan.goldAmount),
+          amount_raw: amountRaw,
+        },
+      },
+      t,
+    );
+
+    return { plan: locked, duplicate: false };
+  });
+
+  if (!transaction && !out.duplicate) {
+    await sendInstallmentPush(coreId, {
+      title: "Asset Claimed",
+      body: `Your ${fmtToken(plan.goldAmount)} ${tokenUnit(plan.assetCode)} has been released to your wallet.`,
+      data: {
+        type: "installment",
+        event: "asset_released",
+        plan_id: String(plan.id),
+      },
+    });
+  }
+
+  return {
+    plan: out.plan,
+    txHash: releaseTxHash,
+    beneficiary,
+    duplicate: out.duplicate,
+  };
 }
 
 // ============================================================
@@ -542,7 +793,10 @@ async function settlePlan(planId, now = new Date(), transaction) {
     await engine.persist(plan, s, schedules, now, t);
     return plan;
   });
-  if (!transaction && plan && sRef) await dispatchPushes(plan, sRef);
+  if (!transaction && plan && sRef) {
+    await dispatchPushes(plan, sRef);
+    await dispatchChainOps(plan, sRef);
+  }
   return plan;
 }
 
@@ -850,6 +1104,7 @@ module.exports = {
   pay,
   cancel,
   restructure,
+  claim,
   settlePlan,
   listPlans,
   getPlanDetail,

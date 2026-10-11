@@ -7,6 +7,7 @@ const {
   pay,
   cancel,
   restructure,
+  claim,
   listPlans,
   getPlanDetail,
 } = require("../controllers/installmentController");
@@ -26,5 +27,6 @@ router.get("/:plan_id", verifyToken, getPlanDetail);
 router.post("/:plan_id/pay", verifyToken, pay);
 router.post("/:plan_id/cancel", verifyToken, cancel);
 router.post("/:plan_id/restructure", verifyToken, restructure);
+router.post("/:plan_id/claim", verifyToken, claim);
 
 module.exports = router;

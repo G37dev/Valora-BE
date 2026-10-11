@@ -58,11 +58,18 @@ function loadState(plan) {
     // Push notifications yang di-queue selama settle; dikirim oleh service
     // SETELAH transaction commit agar notif selalu konsisten dengan DB.
     pushes: [],
+    // Operasi on-chain (allocate/reclaim pool) — dieksekusi service SETELAH
+    // commit, best-effort: kegagalan chain tidak me-rollback state DB.
+    chainOps: [],
   };
 }
 
 function queuePush(s, push) {
   if (Array.isArray(s.pushes)) s.pushes.push(push);
+}
+
+function queueChainOp(s, op) {
+  if (Array.isArray(s.chainOps)) s.chainOps.push(op);
 }
 
 const fmtIdr = (v) => `${Number(big(v)).toLocaleString("id-ID")} IDR`;
@@ -470,6 +477,7 @@ async function autoLiquidate(plan, s, effectiveAt, transaction) {
     nextCarryingAt: null,
     closedAt: effectiveAt,
   });
+  queueChainOp(s, { type: "RECLAIM" });
 
   const refundTx = await ledger.creditWallet(
     {
@@ -696,6 +704,7 @@ async function activate(
   const claimableAt = cal.calendarDaysFrom(activatedAt, RULES.CLAIM_DELAY_DAYS);
 
   plan.set({ status: STATUS.ACTIVE, activatedAt, maturityAt, claimableAt });
+  queueChainOp(s, { type: "ALLOCATE" });
 
   let allocation;
   if (isFlexible(plan)) {
@@ -981,6 +990,7 @@ async function cancel(plan, s, effectiveAt, transaction) {
     nextCarryingAt: null,
     closedAt: effectiveAt,
   });
+  queueChainOp(s, { type: "RECLAIM" });
 
   const refundTx = await ledger.creditWallet(
     {
