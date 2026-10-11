@@ -2,7 +2,9 @@ const { EarnPosition, Wallet } = require("../../models");
 
 const {
   getAssetTokenAddress,
+  getEarnPoolAddress,
   getTokenDecimals,
+  readAprBps,
 } = require("./earn.blockchain.service");
 
 const {
@@ -86,6 +88,22 @@ const createPendingEarn = async ({
   const parsedTermCode = parseTermCode(termCode);
 
   console.log("[Earn Service] parsedTermCode:", parsedTermCode);
+
+  /**
+   * 5b. TERM HARUS DIDUKUNG POOL (aprConfigs[term] > 0 on-chain).
+   * Kalau tidak, createEarn pasti revert UnsupportedTerm dan
+   * posisi cuma jadi FAILED sia-sia — reject di sini.
+   */
+  const poolAddress = getEarnPoolAddress(normalizedAsset);
+  const aprBps = await readAprBps(poolAddress, parsedTermCode);
+
+  if (!aprBps) {
+    throw new Error(
+      `Term ${parsedTermCode} hari tidak tersedia untuk ${normalizedAsset}.`,
+    );
+  }
+
+  console.log("[Earn Service] aprBps on-chain:", aprBps);
 
   /**
    * 6. WALLET

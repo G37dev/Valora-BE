@@ -308,6 +308,16 @@ const readPlatformFeeBps = async (poolAddress) => {
   return Number(result);
 };
 
+/** Baca APR on-chain untuk termCode (0 = term tidak didukung pool). */
+const readAprBps = async (poolAddress, termCode) => {
+  const result = await readContract({
+    contract: getPoolContract(poolAddress),
+    method: "function aprConfigs(uint8) view returns (uint16)",
+    params: [Number(termCode)],
+  });
+  return Number(result);
+};
+
 const readTokenBalance = async ({ tokenAddress, owner }) => {
   const result = await readContract({
     contract: getTokenContract(tokenAddress),
@@ -369,6 +379,7 @@ module.exports = {
   readPoolPosition,
   readNextPositionId,
   readPlatformFeeBps,
+  readAprBps,
   readTokenBalance,
   findOrphanPosition,
 };
