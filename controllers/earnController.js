@@ -175,6 +175,21 @@ const recordEarnPosition = async (req, res) => {
     if (result.isExisting) {
       const position = result.position;
 
+      /**
+       * Posisi FAILED/PENDING tetap bisa di-retry pakai key yang sama —
+       * antre ulang dengan jobId unik. JobId lama tidak dipakai lagi
+       * supaya tidak ketahan dedupe BullMQ. PROCESSING sengaja diskip:
+       * job in-flight bisa race double-create; crash recovery-nya
+       * sudah di-handle retry BullMQ.
+       */
+      if ([EARN_STATUS.PENDING, EARN_STATUS.FAILED].includes(position.status)) {
+        await earnQueue.add(
+          "process-earn",
+          { positionId: position.id },
+          { jobId: `earn-${position.id}-${Date.now()}` },
+        );
+      }
+
       return res.status(200).json({
         success: true,
         message: "Earn sudah pernah dibuat.",
