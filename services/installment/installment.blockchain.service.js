@@ -11,7 +11,7 @@
  */
 
 const Decimal = require("decimal.js");
-const { keccak256, toBytes } = require("viem");
+const { keccak256, stringToHex } = require("thirdweb/utils");
 const {
   getContract,
   readContract,
@@ -41,7 +41,7 @@ const normalizeAsset = (assetCode) =>
   ASSET_ALIASES[String(assetCode || "").toUpperCase()] || null;
 
 function planIdToBytes32(planId) {
-  return keccak256(toBytes(String(planId)));
+  return keccak256(stringToHex(String(planId)));
 }
 
 function getPoolAddress(assetCode) {
