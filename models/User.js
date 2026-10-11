@@ -11,6 +11,11 @@ const User = sequelize.define(
       allowNull: false,
       field: "core_id",
     },
+    uuid: {
+      type: DataTypes.STRING(6),
+      unique: true,
+      allowNull: true,
+    },
     firstName: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -43,7 +48,36 @@ const User = sequelize.define(
     timestamps: true,
     createdAt: "created_at",
     updatedAt: "updated_at",
+    hooks: {
+      beforeValidate: async (user, options) => {
+        // Generate kode unik 6 digit sebelum data divalidasi/disimpan
+        if (!user.uuid) {
+          user.uuid = await generateUserUuid(options.transaction);
+        }
+      },
+    },
   },
 );
+
+async function generateUserUuid(transaction) {
+  let isUnique = false;
+  let newUuid = "";
+
+  while (!isUnique) {
+    // 6 digit angka acak (100000-999999, tanpa leading zero)
+    newUuid = String(Math.floor(100000 + Math.random() * 900000));
+
+    const existing = await User.findOne({
+      where: { uuid: newUuid },
+      transaction,
+    });
+
+    if (!existing) {
+      isUnique = true;
+    }
+  }
+
+  return newUuid;
+}
 
 module.exports = User;
