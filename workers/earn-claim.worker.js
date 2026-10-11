@@ -9,8 +9,11 @@ const {
   getEarnPoolAddress,
   getPoolRouterAddress,
   readPoolPosition,
+  getTokenDecimals,
   client,
 } = require("../services/earn/earn.blockchain.service");
+
+const pushService = require("../services/pushService");
 
 const {
   claimEarnTransaction,
@@ -429,6 +432,42 @@ const earnClaimWorker = new Worker(
         txHash: claimTxHash,
         completedAt: new Date(),
       });
+
+      // =====================================================
+      // 22.5 PUSH NOTIFICATION
+      //
+      // Fire-and-forget — gagal push tidak boleh menggagalkan
+      // claim yang sudah sukses on-chain.
+      // =====================================================
+
+      try {
+        const decimals = await getTokenDecimals(tokenAddress);
+
+        const fmtToken = (raw) => {
+          const value = Number(raw) / 10 ** decimals;
+
+          return value.toLocaleString("en-US", {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: decimals > 6 ? 6 : decimals,
+          });
+        };
+
+        await pushService.sendPushToUser(position.coreId, {
+          title: "Earn Claimed",
+          body: `${fmtToken(totalPayout)} ${position.asset} has been sent to your wallet.`,
+          data: {
+            type: "earn",
+            event: "earn_claimed",
+            position_id: String(position.id),
+            tx_hash: claimTxHash,
+          },
+        });
+      } catch (pushError) {
+        console.log(
+          `[Earn Claim Worker] push gagal position ${position.id}:`,
+          pushError.message,
+        );
+      }
 
       console.log("[Earn Claim Worker] DB updated:", {
         id: position.id,
