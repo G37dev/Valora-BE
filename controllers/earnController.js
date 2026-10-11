@@ -77,7 +77,8 @@ const getUserEarnPositions = async (req, res) => {
 
         tx_hash: position.txHash,
 
-        created_at: position.createdAt,
+        created_at:
+          position.createdAt ?? position.dataValues?.created_at ?? null,
 
         maturity_at: position.maturityAt,
 
@@ -119,7 +120,8 @@ const getUserEarnPositions = async (req, res) => {
  */
 const recordEarnPosition = async (req, res) => {
   try {
-    const { core_id, asset, amount, principal, term_code } = req.body;
+    const { core_id, asset, amount, principal, term_code, idempotency_key } =
+      req.body;
 
     if (!core_id) {
       return res.status(400).json({
@@ -143,11 +145,10 @@ const recordEarnPosition = async (req, res) => {
     }
 
     /**
-     * Setiap request Earn = transaksi baru.
-     *
-     * UUID berbeda untuk setiap request.
+     * Client boleh kirim idempotency_key (retry/double-tap safe).
+     * Kalau tidak dikirim, generate baru = setiap request transaksi baru.
      */
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = idempotency_key || crypto.randomUUID();
 
     console.log("[Earn] Creating:", {
       coreId: core_id,
@@ -284,16 +285,24 @@ const claimEarnPosition = async (req, res) => {
       });
     }
 
-    if (position) {
-      try {
-        if (position.status === EARN_STATUS.CLAIMING) {
-          await position.update({
-            status: EARN_STATUS.ACTIVE,
-          });
-        }
-      } catch (dbError) {
-        console.error("[Earn Claim Worker] Gagal recovery status:", dbError);
-      }
+    /**
+     * Gate status: hanya ACTIVE/CLAIMING/FAILED yang boleh di-claim.
+     * CLAIMING = job sebelumnya crash -> reset ke ACTIVE.
+     * FAILED   = claim sebelumnya gagal -> reset ke ACTIVE (retry aman
+     *            karena worker cek state on-chain dulu).
+     * PENDING/PROCESSING -> belum ada posisi on-chain.
+     */
+    const CLAIMABLE_STATUSES = [
+      EARN_STATUS.ACTIVE,
+      EARN_STATUS.CLAIMING,
+      EARN_STATUS.FAILED,
+    ];
+
+    if (!CLAIMABLE_STATUSES.includes(position.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Earn position belum bisa di-claim (status: ${position.status}).`,
+      });
     }
 
     if (!position.positionId) {
@@ -329,6 +338,15 @@ const claimEarnPosition = async (req, res) => {
       });
     }
 
+    // Recovery setelah semua validasi lolos — CLAIMING/FAILED -> ACTIVE
+    if (position.status !== EARN_STATUS.ACTIVE) {
+      try {
+        await position.update({ status: EARN_STATUS.ACTIVE });
+      } catch (dbError) {
+        console.error("[Earn Claim] Gagal recovery status:", dbError);
+      }
+    }
+
     // =====================================================
     // JOB ID
     // =====================================================
@@ -351,7 +369,12 @@ const claimEarnPosition = async (req, res) => {
 
         removeOnComplete: true,
 
-        removeOnFail: false,
+        /**
+         * Failed job dihapus supaya retry berikutnya (jobId sama)
+         * benar-benar membuat job baru — kalau dibiarkan, BullMQ
+         * mengembalikan job gagal lama dan claim tidak pernah jalan.
+         */
+        removeOnFail: true,
       },
     );
 

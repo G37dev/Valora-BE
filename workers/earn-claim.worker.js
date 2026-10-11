@@ -8,6 +8,7 @@ const {
   getRouterAddress,
   getEarnPoolAddress,
   getPoolRouterAddress,
+  readPoolPosition,
   client,
 } = require("../services/earn/earn.blockchain.service");
 
@@ -216,6 +217,50 @@ const earnClaimWorker = new Worker(
       console.log("[Earn Claim Worker] Token:", tokenAddress);
 
       // =====================================================
+      // 10.5 ON-CHAIN STATE CHECK (idempotent)
+      //
+      // Kalau posisi sudah CLAIMED on-chain (claim tx sukses tapi
+      // worker crash sebelum update DB), cukup sinkronkan — jangan
+      // kirim tx claim kedua yang pasti revert AlreadyClaimed.
+      // =====================================================
+
+      const onchainPos = await readPoolPosition(
+        poolAddress,
+        blockchainPositionId,
+      );
+
+      console.log("[Earn Claim Worker] On-chain position:", onchainPos);
+
+      if (!onchainPos.exists) {
+        throw new Error(`Position ${blockchainPositionId} tidak ada on-chain.`);
+      }
+
+      if (onchainPos.owner.toLowerCase() !== wallet.address.toLowerCase()) {
+        throw new Error(
+          `On-chain owner mismatch. OnChain=${onchainPos.owner}, DB=${wallet.address}`,
+        );
+      }
+
+      if (onchainPos.status === 1) {
+        console.log(
+          "[Earn Claim Worker] Sudah CLAIMED on-chain — sinkronisasi DB.",
+        );
+
+        await position.update({
+          status: EARN_STATUS.CLAIMED,
+          completedAt: new Date(),
+        });
+
+        return {
+          success: true,
+          onchainSynced: true,
+          positionId: position.id,
+          blockchainPositionId,
+          status: EARN_STATUS.CLAIMED,
+        };
+      }
+
+      // =====================================================
       // 11. CLAIMING
       // =====================================================
 
@@ -382,6 +427,7 @@ const earnClaimWorker = new Worker(
       await position.update({
         status: EARN_STATUS.CLAIMED,
         txHash: claimTxHash,
+        completedAt: new Date(),
       });
 
       console.log("[Earn Claim Worker] DB updated:", {
@@ -443,6 +489,8 @@ const earnClaimWorker = new Worker(
           if (position.status !== EARN_STATUS.CLAIMED) {
             await position.update({
               status: EARN_STATUS.FAILED,
+              errorMessage: String(error?.message || error).slice(0, 2000),
+              failedAt: new Date(),
             });
 
             console.log("[Earn Claim Worker] Position → FAILED:", position.id);

@@ -8,6 +8,11 @@ const {
   getRouterAddress,
   getEarnPoolAddress,
   getPoolRouterAddress,
+  readPoolPosition,
+  readNextPositionId,
+  readPlatformFeeBps,
+  readTokenBalance,
+  findOrphanPosition,
   client,
 } = require("../services/earn/earn.blockchain.service");
 
@@ -88,11 +93,23 @@ const earnWorker = new Worker(
 
       // =====================================================
       // 2. IDEMPOTENCY / DUPLICATE PROTECTION
+      //
+      // PENDING   -> create baru
+      // PROCESSING/FAILED + txHash -> resume dari receipt (tx sudah
+      //   terkirim tapi worker crash sebelum finalize DB)
+      // FAILED tanpa txHash -> cek posisi yatim on-chain dulu,
+      //   kalau tidak ada baru boleh create ulang
       // =====================================================
 
-      if (position.status !== EARN_STATUS.PENDING) {
+      if (
+        ![
+          EARN_STATUS.PENDING,
+          EARN_STATUS.PROCESSING,
+          EARN_STATUS.FAILED,
+        ].includes(position.status)
+      ) {
         console.log(
-          `[Earn Worker] Position ${position.id} bukan PENDING. Skip.`,
+          `[Earn Worker] Position ${position.id} status=${position.status}. Skip.`,
         );
 
         return {
@@ -103,6 +120,11 @@ const earnWorker = new Worker(
           txHash: position.txHash,
         };
       }
+
+      await position.update({
+        attempts: (position.attempts || 0) + 1,
+        errorMessage: null,
+      });
 
       // =====================================================
       // 3. VALIDATE DATABASE DATA
@@ -238,70 +260,121 @@ const earnWorker = new Worker(
       }
 
       // =====================================================
-      // 10. CHECK TOKEN ALLOWANCE
+      // 10-13. CREATE / RESUME
+      //
+      // - txHash sudah tersimpan -> skip create, resume dari receipt
+      //   (double-create protection: retry tidak mengirim tx kedua)
+      // - belum ada txHash -> cek posisi yatim on-chain dulu
+      //   (tx pernah terkirim tapi crash sebelum hash tersimpan),
+      //   baru create kalau memang belum ada
       // =====================================================
 
-      console.log("[Earn Worker] Checking allowance...");
-
-      const allowanceResult = await ensureTokenAllowance({
-        tokenAddress,
-        asset: position.asset,
-        owner: smartAccount.address,
-        amount,
-        smartAccount,
-      });
-
-      console.log("[Earn Worker] Allowance result:", {
-        approved: allowanceResult.approved,
-        allowance: allowanceResult.allowance.toString(),
-        txHash: allowanceResult.txHash,
-      });
-
-      // =====================================================
-      // 11. CREATE EARN
-      // =====================================================
-
-      console.log("");
-      console.log("[Earn Worker] ================================");
-      console.log("[Earn Worker] MENGIRIM createEarn()");
-      console.log("[Earn Worker] ================================");
-
-      console.log("[Earn Worker] Params:", {
-        router: routerAddress,
-        pool: poolAddress,
-        token: tokenAddress,
-        amount: amount.toString(),
-        termCode,
-        user: smartAccount.address,
-      });
-
-      const txHash = await createEarnTransaction({
-        tokenAddress,
-        amount,
-        termCode,
-        smartAccount,
-      });
+      let txHash = position.txHash || null;
 
       if (!txHash) {
-        throw new Error("createEarn tidak menghasilkan transaction hash.");
+        const feeBps = await readPlatformFeeBps(poolAddress);
+        const expectedPrincipal = amount - (amount * BigInt(feeBps)) / 10000n;
+
+        const orphan = await findOrphanPosition({
+          poolAddress,
+          user: smartAccount.address,
+          expectedPrincipal,
+          termCode,
+          createdAfter: position.createdAt ?? position.dataValues?.created_at,
+          // FAILED lama: orphan bisa terkubur posisi lain — scan lebih dalam
+          scanLast: position.status === EARN_STATUS.FAILED ? 50 : 5,
+        });
+
+        if (orphan) {
+          console.log("[Earn Worker] Orphan on-chain diadopsi:", orphan);
+
+          await position.update({
+            positionId: orphan.positionId,
+            status: EARN_STATUS.ACTIVE,
+            aprBps: orphan.aprBps,
+            maturityAt: new Date(orphan.maturityAt * 1000),
+            completedAt: new Date(),
+          });
+
+          return {
+            success: true,
+            adopted: true,
+            positionId: position.id,
+            blockchainPositionId: orphan.positionId,
+            status: EARN_STATUS.ACTIVE,
+          };
+        }
+
+        // Pre-check balance — hemat sponsored gas untuk tx yang pasti revert
+        const balance = await readTokenBalance({
+          tokenAddress,
+          owner: smartAccount.address,
+        });
+        if (balance < amount) {
+          throw new Error(
+            `Saldo token tidak cukup. balance=${balance.toString()}, required=${amount.toString()}`,
+          );
+        }
+
+        // =====================================================
+        // 10. CHECK TOKEN ALLOWANCE
+        // =====================================================
+
+        console.log("[Earn Worker] Checking allowance...");
+
+        const allowanceResult = await ensureTokenAllowance({
+          tokenAddress,
+          asset: position.asset,
+          owner: smartAccount.address,
+          amount,
+          smartAccount,
+        });
+
+        console.log("[Earn Worker] Allowance result:", {
+          approved: allowanceResult.approved,
+          allowance: allowanceResult.allowance.toString(),
+          txHash: allowanceResult.txHash,
+        });
+
+        // =====================================================
+        // 11. CREATE EARN
+        // =====================================================
+
+        console.log("[Earn Worker] MENGIRIM createEarn()", {
+          router: routerAddress,
+          pool: poolAddress,
+          token: tokenAddress,
+          amount: amount.toString(),
+          termCode,
+          user: smartAccount.address,
+        });
+
+        txHash = await createEarnTransaction({
+          tokenAddress,
+          amount,
+          termCode,
+          smartAccount,
+        });
+
+        if (!txHash) {
+          throw new Error("createEarn tidak menghasilkan transaction hash.");
+        }
+
+        console.log("[Earn Worker] CREATE EARN TX:", txHash);
+
+        // =====================================================
+        // 12. UPDATE PROCESSING (ASAP — minimalkan crash window)
+        // =====================================================
+
+        await position.update({
+          txHash,
+          status: EARN_STATUS.PROCESSING,
+          processingAt: new Date(),
+        });
+      } else {
+        console.log("[Earn Worker] Resume dari txHash tersimpan:", txHash);
+        await position.update({ status: EARN_STATUS.PROCESSING });
       }
-
-      console.log("[Earn Worker] CREATE EARN TX:", txHash);
-
-      // =====================================================
-      // 12. UPDATE PROCESSING
-      // =====================================================
-
-      await position.update({
-        txHash,
-        status: EARN_STATUS.PROCESSING,
-      });
-
-      console.log("[Earn Worker] DB updated:", {
-        positionId: position.id,
-        txHash,
-        status: EARN_STATUS.PROCESSING,
-      });
 
       // =====================================================
       // 13. WAIT RECEIPT
@@ -479,6 +552,7 @@ const earnWorker = new Worker(
         status: EARN_STATUS.ACTIVE,
         aprBps: parsedAprBps,
         maturityAt: maturityDate,
+        completedAt: new Date(),
       };
 
       /**
@@ -544,6 +618,8 @@ const earnWorker = new Worker(
         try {
           await position.update({
             status: EARN_STATUS.FAILED,
+            errorMessage: String(error?.message || error).slice(0, 2000),
+            failedAt: new Date(),
           });
 
           console.log("[Earn Worker] Position marked FAILED:", position.id);

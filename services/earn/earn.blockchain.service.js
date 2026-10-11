@@ -265,6 +265,94 @@ const getPoolRouterAddress = async (poolAddress) => {
   });
 };
 
+const getPoolContract = (poolAddress) =>
+  getContract({ client, chain: sepolia, address: poolAddress });
+
+/** Baca Position struct dari EarnAssetPool. */
+const readPoolPosition = async (poolAddress, positionId) => {
+  const result = await readContract({
+    contract: getPoolContract(poolAddress),
+    method:
+      "function positions(uint256) view returns (uint256 principalRaw, address owner, uint64 maturityAt, uint16 aprBps, uint8 termCode, uint8 status)",
+    params: [BigInt(positionId)],
+  });
+  return {
+    principalRaw: BigInt(result.principalRaw ?? result[0]),
+    owner: result.owner ?? result[1],
+    maturityAt: Number(result.maturityAt ?? result[2]),
+    aprBps: Number(result.aprBps ?? result[3]),
+    termCode: Number(result.termCode ?? result[4]),
+    status: Number(result.status ?? result[5]), // 0=Active, 1=Claimed
+    exists:
+      (result.owner ?? result[1]) &&
+      (result.owner ?? result[1]) !==
+        "0x0000000000000000000000000000000000000000",
+  };
+};
+
+const readNextPositionId = async (poolAddress) => {
+  const result = await readContract({
+    contract: getPoolContract(poolAddress),
+    method: "function nextPositionId() view returns (uint256)",
+    params: [],
+  });
+  return BigInt(result);
+};
+
+const readPlatformFeeBps = async (poolAddress) => {
+  const result = await readContract({
+    contract: getPoolContract(poolAddress),
+    method: "function platformFeeBps() view returns (uint16)",
+    params: [],
+  });
+  return Number(result);
+};
+
+const readTokenBalance = async ({ tokenAddress, owner }) => {
+  const result = await readContract({
+    contract: getTokenContract(tokenAddress),
+    method: "function balanceOf(address) view returns (uint256)",
+    params: [owner],
+  });
+  return BigInt(result);
+};
+
+/**
+ * Cari posisi on-chain yang "yatim": dibuat untuk `user` dengan
+ * principal+termCode cocok tapi belum tercatat di DB (worker crash
+ * setelah tx tapi sebelum update). Scan beberapa posisi terakhir.
+ */
+const findOrphanPosition = async ({
+  poolAddress,
+  user,
+  expectedPrincipal,
+  termCode,
+  createdAfter,
+  scanLast = 5,
+}) => {
+  const nextId = await readNextPositionId(poolAddress);
+  const ownerLc = user.toLowerCase();
+  const afterMs = createdAfter ? new Date(createdAfter).getTime() : 0;
+
+  for (
+    let id = nextId - 1n;
+    id >= 1n && id >= nextId - BigInt(scanLast);
+    id -= 1n
+  ) {
+    const pos = await readPoolPosition(poolAddress, id);
+    if (
+      pos.exists &&
+      pos.owner.toLowerCase() === ownerLc &&
+      pos.termCode === termCode &&
+      pos.principalRaw === expectedPrincipal &&
+      pos.maturityAt * 1000 > afterMs
+    ) {
+      return { positionId: id.toString(), ...pos };
+    }
+  }
+  return null;
+};
+
 module.exports = {
   client,
   adminAccount,
@@ -277,4 +365,10 @@ module.exports = {
   getTokenAllowance,
   getUserSmartAccount,
   getPoolRouterAddress,
+  getPoolContract,
+  readPoolPosition,
+  readNextPositionId,
+  readPlatformFeeBps,
+  readTokenBalance,
+  findOrphanPosition,
 };
