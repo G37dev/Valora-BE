@@ -601,7 +601,7 @@ async function claim({ coreId, planId, now = new Date(), transaction }) {
       },
     );
   }
-  if (plan.status !== STATUS.CLAIMABLE) {
+  if (plan.status !== STATUS.CLAIMABLE && plan.status !== STATUS.CLAIMING) {
     throw new InstallmentError(`Plan is not claimable (${plan.status})`, {
       status: 409,
       code: "NOT_CLAIMABLE",
@@ -639,6 +639,13 @@ async function claim({ coreId, planId, now = new Date(), transaction }) {
     }
   }
 
+  // Tandai claim in-flight supaya request ulang (double-tap / re-entry
+  // dari FE) tidak menembak release tx kedua. CLAIMING = resume path:
+  // on-chain check di bawah menentukan release perlu dikirim atau tidak.
+  if (plan.status === STATUS.CLAIMABLE) {
+    await plan.update({ status: STATUS.CLAIMING });
+  }
+
   // Pastikan alokasi on-chain ada (plan lama / allocate gagal saat aktivasi),
   // lalu release ke beneficiary. Kalau chain sudah CLAIMED tapi DB belum,
   // cukup finalisasi DB (idempotent sync).
@@ -659,6 +666,8 @@ async function claim({ coreId, planId, now = new Date(), transaction }) {
       releaseTxHash = await bc.releaseClaimOnChain(plan);
     }
   } catch (error) {
+    // Release gagal -> buka lagi gate claim supaya user bisa retry.
+    await plan.update({ status: STATUS.CLAIMABLE }).catch(() => {});
     if (error instanceof InstallmentError) throw error;
     throw new InstallmentError(
       "Asset release failed on-chain. Please try again.",
@@ -675,7 +684,10 @@ async function claim({ coreId, planId, now = new Date(), transaction }) {
     if (locked.status === STATUS.CLOSED) {
       return { plan: locked, duplicate: true };
     }
-    if (locked.status !== STATUS.CLAIMABLE) {
+    if (
+      locked.status !== STATUS.CLAIMABLE &&
+      locked.status !== STATUS.CLAIMING
+    ) {
       throw new InstallmentError(`Plan is not claimable (${locked.status})`, {
         status: 409,
         code: "NOT_CLAIMABLE",
