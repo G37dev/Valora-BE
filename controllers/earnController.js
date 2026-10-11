@@ -80,6 +80,12 @@ const getUserEarnPositions = async (req, res) => {
         created_at:
           position.createdAt ?? position.dataValues?.created_at ?? null,
 
+        updated_at:
+          position.updatedAt ?? position.dataValues?.updated_at ?? null,
+
+        completed_at:
+          position.completedAt ?? position.dataValues?.completed_at ?? null,
+
         maturity_at: position.maturityAt,
 
         estimated_reward: estimatedReward.toString(),
