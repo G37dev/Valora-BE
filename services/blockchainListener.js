@@ -26,26 +26,28 @@ const getTokensToWatch = () => [
   {
     name: "USDT",
     address: process.env.USDT_DUMMY_CONTRACT_ADDRESS,
-    earnPoolAddress: process.env.EARN_POOL_USDT_ADDRESS,
+    earnPoolAddress: process.env.EARN_USDT_POOL_CONTRACT_ADDRESS,
     swapPoolAddress: process.env.SWAP_USDT_POOL_ADDRESS,
   },
   {
     name: "USDC",
     address: process.env.USDC_DUMMY_CONTRACT_ADDRESS,
-    earnPoolAddress: process.env.EARN_POOL_USDC_ADDRESS,
-    swapPoolAddress: process.env.SWAP_USDC_POOL_ADDRESS,
+    earnPoolAddress: process.env.EARN_USDC_POOL_CONTRACT_ADDRESS,
+    swapPoolAddress: process.env.SWAP_USDT_POOL_ADDRESS,
   },
   {
     name: "GOLD",
     address: process.env.GOLD_DUMMY_CONTRACT_ADDRESS,
-    earnPoolAddress: process.env.EARN_POOL_GOLD_ADDRESS,
+    earnPoolAddress: process.env.EARN_GOLD_POOL_CONTRACT_ADDRESS,
     swapPoolAddress: process.env.SWAP_GOLD_POOL_ADDRESS,
+    installmentPoolAddress: process.env.INSTALLMENT_GOLD_POOL_ADDRESS,
   },
   {
     name: "XAUT",
     address: process.env.XAUT_DUMMY_CONTRACT_ADDRESS,
-    earnPoolAddress: process.env.EARN_POOL_XAUT_ADDRESS,
+    earnPoolAddress: process.env.EARN_XAUT_POOL_CONTRACT_ADDRESS,
     swapPoolAddress: process.env.SWAP_XAUT_POOL_ADDRESS,
+    installmentPoolAddress: process.env.INSTALLMENT_XAUT_POOL_ADDRESS,
   },
 ];
 const getEarnPoolAddresses = () =>
@@ -56,6 +58,11 @@ const getEarnPoolAddresses = () =>
 const getSwapPoolAddresses = () =>
   getTokensToWatch()
     .map((token) => token.swapPoolAddress)
+    .filter(Boolean)
+    .map(normalizeAddress);
+const getInstallmentPoolAddresses = () =>
+  getTokensToWatch()
+    .map((token) => token.installmentPoolAddress)
     .filter(Boolean)
     .map(normalizeAddress);
 const findExistingTransaction = async (txHash) => {
@@ -119,6 +126,7 @@ const handleTransferEvent = async ({ event, token }) => {
   }
   const earnPoolAddresses = getEarnPoolAddresses();
   const swapPoolAddresses = getSwapPoolAddresses();
+  const installmentPoolAddresses = getInstallmentPoolAddresses();
   if (earnPoolAddresses.includes(normalizedFrom)) {
     console.log(`[Blockchain] Skip Earn Pool payout: ${txHash}`);
     return;
@@ -127,16 +135,13 @@ const handleTransferEvent = async ({ event, token }) => {
     console.log(`[Blockchain] Skip Swap Pool payout: ${txHash}`);
     return;
   }
+  if (installmentPoolAddresses.includes(normalizedFrom)) {
+    console.log(`[Blockchain] Skip Installment Pool payout: ${txHash}`);
+    return;
+  }
   const receiverWallet = await findWalletByAddress(to);
   if (!receiverWallet) {
     console.log(`[Blockchain] Receiver bukan wallet user terdaftar: ${to}`);
-    return;
-  }
-  const earnClaimTx = await Transaction.findOne({
-    where: { tx_hash: txHash, type: "EARN_CLAIM" },
-  });
-  if (earnClaimTx) {
-    console.log(`[Blockchain] Skip EARN_CLAIM: ${txHash}`);
     return;
   }
   const contract = getContract({
@@ -194,6 +199,9 @@ const startBlockchainListener = async () => {
     console.log(`Token: ${token.address}`);
     console.log(`Earn Pool: ${token.earnPoolAddress || "NOT CONFIGURED"}`);
     console.log(`Swap Pool: ${token.swapPoolAddress || "NOT CONFIGURED"}`);
+    console.log(
+      `Installment Pool: ${token.installmentPoolAddress || "NOT CONFIGURED"}`,
+    );
     watchContractEvents({
       contract,
       events: [transferEvent],
