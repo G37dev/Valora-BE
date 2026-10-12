@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/authController");
+const passkeyController = require("../controllers/passkeyController");
 const rateLimit = require("../middleware/rateLimit");
 
 // ==========================================
@@ -31,5 +32,30 @@ router.post("/2fa/verify-tx", otpLimiter, authController.verifyTransaction2FA);
 router.get("/2fa/status", authController.get2FAStatus);
 // Nonaktifkan authenticator (butuh JWT + kode OTP aktif)
 router.post("/2fa/disable", otpLimiter, authController.disableAuthenticator);
+
+// ==========================================
+// 3. ROUTE PASSKEY (WEBAUTHN)
+// ==========================================
+// Setup passkey baru (butuh JWT login penuh)
+router.post(
+  "/passkey/register-options",
+  setupLimiter,
+  passkeyController.getRegisterOptions,
+);
+router.post(
+  "/passkey/register-verify",
+  setupLimiter,
+  passkeyController.verifyRegister,
+);
+// Login dengan passkey (butuh pre_auth token)
+router.post(
+  "/passkey/auth-options",
+  otpLimiter,
+  passkeyController.getAuthOptions,
+);
+router.post("/passkey/auth-verify", otpLimiter, passkeyController.verifyAuth);
+// Manajemen passkey (butuh JWT login penuh)
+router.get("/passkey/list", passkeyController.listPasskeys);
+router.delete("/passkey/:id", passkeyController.deletePasskey);
 
 module.exports = router;

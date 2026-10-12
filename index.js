@@ -55,6 +55,33 @@ app.get("/", (req, res) => {
 });
 
 // ===============================
+// WELL-KNOWN — Android Digital Asset Links (Passkey/WebAuthn)
+// ===============================
+// SHA-256 fingerprint signing certificate yang diizinkan.
+// Default: debug keystore (dev build). Tambah fingerprint
+// release keystore lewat env ASSETLINKS_FINGERPRINTS (comma-sep, hex tanpa colon).
+app.get("/.well-known/assetlinks.json", (req, res) => {
+  const fingerprints = (
+    process.env.ASSETLINKS_FINGERPRINTS ||
+    "D5:88:46:5A:39:03:7D:49:A8:9A:CC:36:8D:65:1A:CB:81:00:62:39:65:F2:7D:1C:71:DF:05:28:98:A6:BD:54"
+  ).split(",");
+
+  res.json(
+    fingerprints.map((fp) => ({
+      relation: [
+        "delegate_permission/common.handle_all_urls",
+        "delegate_permission/common.get_login_creds",
+      ],
+      target: {
+        namespace: "android_app",
+        package_name: "com.valora.valoramobile",
+        sha256_cert_fingerprints: [fp.trim()],
+      },
+    })),
+  );
+});
+
+// ===============================
 // DATABASE MIDDLEWARE
 // ===============================
 

@@ -143,16 +143,26 @@ async function handle2FACheck(coreId, tenantId, res) {
     },
   });
 
+  const passkeyCount = await AuthIdentity.count({
+    where: {
+      coreId,
+      provider: "PASSKEY",
+      type: "WEBAUTHN",
+      status: "ACTIVE",
+    },
+  });
+
   const preAuthToken = generatePreAuthToken(coreId, tenantId);
 
-  if (totpRecord) {
+  if (totpRecord || passkeyCount > 0) {
     return res.json({
       message: "Verifikasi tambahan diperlukan.",
       require2FA: true,
       requireSetup: false,
       preAuthToken,
       availableMethods: {
-        authenticator: true,
+        authenticator: Boolean(totpRecord),
+        passkey: passkeyCount > 0,
       },
     });
   }
@@ -606,7 +616,20 @@ exports.get2FAStatus = async (req, res) => {
       },
     });
 
-    res.json({ success: true, enabled: Boolean(totpRecord) });
+    const passkeyCount = await AuthIdentity.count({
+      where: {
+        coreId: decoded.coreId,
+        provider: "PASSKEY",
+        type: "WEBAUTHN",
+        status: "ACTIVE",
+      },
+    });
+
+    res.json({
+      success: true,
+      enabled: Boolean(totpRecord),
+      passkeyEnabled: passkeyCount > 0,
+    });
   } catch (error) {
     console.error("2FA status error:", error);
     res.status(500).json({ error: "Gagal cek status 2FA." });
