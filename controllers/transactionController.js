@@ -97,34 +97,34 @@ exports.getUserTransactions = async (req, res) => {
      */
     const [swaps, internalTxs] = await Promise.all([
       Swap.findAll({
-        where: { core_id: coreId },
-        order: [["createdAt", "DESC"]],
+        where: { coreId },
+        order: [["created_at", "DESC"]],
       }),
       InternalTransaction.findAll({
-        where: { core_id: coreId, swap_id: null },
-        order: [["createdAt", "DESC"]],
+        where: { coreId, swapId: null },
+        order: [["created_at", "DESC"]],
       }),
     ]);
 
     const swapRows = swaps.map((s) => ({
       id: `swap-${s.id}`,
       type: "SWAP",
-      asset: s.from_asset,
-      amount: s.from_amount,
-      toAsset: s.to_asset,
-      toAmount: s.to_amount,
+      asset: s.fromAsset,
+      amount: s.fromAmount,
+      toAsset: s.toAsset,
+      toAmount: s.toAmount,
       direction: "DEBIT",
       status: s.status === "PROCESSING" ? "PENDING" : s.status,
       confirmations: 0,
       requiredConfirmations: 0,
-      description: `Swap ${s.from_asset} → ${s.to_asset}`,
+      description: `Swap ${s.fromAsset} → ${s.toAsset}`,
       createdAt: s.createdAt,
     }));
 
     const inferInternalType = (t) => {
       const ref = String(t.reference || "").toUpperCase();
       const desc = String(t.description || "").toUpperCase();
-      if (t.topupId || ref.includes("TOPUP") || ref.includes("TOP_UP"))
+      if (t.topUpId || ref.includes("TOPUP") || ref.includes("TOP_UP"))
         return "TOPUP";
       if (ref.includes("INSTALLMENT") || desc.includes("INSTALLMENT"))
         return "INSTALLMENT";
