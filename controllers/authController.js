@@ -104,11 +104,18 @@ async function handle2FACheck(coreId, tenantId, res) {
     });
   }
 
+  /*
+   * 2FA sekarang opsional — user yang belum setup
+   * authenticator langsung dapat token login penuh.
+   * Setup bisa dilakukan kapan saja dari halaman profile.
+   */
+  const authData = await generateAuthResponse(coreId, tenantId);
+
   return res.json({
-    message: "Anda wajib mengatur Google Authenticator sebelum dapat login.",
+    message: "Login berhasil!",
     require2FA: false,
-    requireSetup: true,
-    preAuthToken,
+    requireSetup: false,
+    ...authData,
   });
 }
 
@@ -271,7 +278,11 @@ exports.setupAuthenticator = async (req, res) => {
     const preAuthToken = authHeader.split(" ")[1];
     const decoded = jwt.verify(preAuthToken, JWT_SECRET);
 
-    if (decoded.scope !== "pre_auth")
+    /*
+     * Terima pre_auth (alur login lama) maupun token
+     * login penuh (setup dari halaman profile).
+     */
+    if (decoded.scope !== "pre_auth" && !decoded.coreId)
       return res.status(403).json({ error: "Token tidak valid" });
 
     const coreId = decoded.coreId;
@@ -323,7 +334,7 @@ exports.verifyAuthenticator = async (req, res) => {
 
     const preAuthToken = authHeader.split(" ")[1];
     const decoded = jwt.verify(preAuthToken, JWT_SECRET);
-    if (decoded.scope !== "pre_auth")
+    if (decoded.scope !== "pre_auth" && !decoded.coreId)
       return res.status(403).json({ error: "Token tidak valid" });
 
     const coreId = decoded.coreId;
