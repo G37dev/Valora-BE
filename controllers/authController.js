@@ -1,4 +1,5 @@
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const { authenticator } = require("otplib");
@@ -18,7 +19,58 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY,
 );
 
-const JWT_SECRET = process.env.JWT_SECRET || "rahasia_super_valora_123";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable wajib di-set.");
+}
+
+// ============================================================================
+// SECURITY HELPERS
+// ============================================================================
+
+const normalizeEmail = (email) =>
+  String(email || "")
+    .trim()
+    .toLowerCase();
+
+const PASSWORD_REGEX =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,}$/;
+
+const BCRYPT_ROUNDS = 12;
+
+/*
+ * Enkripsi TOTP secret at-rest (AES-256-GCM).
+ * Butuh env TOTP_ENCRYPTION_KEY — kalau tidak di-set,
+ * secret disimpan plaintext (fallback untuk env lama).
+ */
+const TOTP_ENC_KEY = process.env.TOTP_ENCRYPTION_KEY;
+
+const getEncKey = () =>
+  crypto.createHash("sha256").update(String(TOTP_ENC_KEY)).digest();
+
+function encryptSecret(plain) {
+  if (!TOTP_ENC_KEY) return plain;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", getEncKey(), iv);
+  const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
+}
+
+function decryptSecret(stored) {
+  if (!stored || !stored.startsWith("enc:")) return stored;
+  const [, ivHex, tagHex, dataHex] = stored.split(":");
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    getEncKey(),
+    Buffer.from(ivHex, "hex"),
+  );
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(dataHex, "hex")),
+    decipher.final(),
+  ]).toString("utf8");
+}
 
 // ============================================================================
 // HELPER 1: Generate Final JWT
@@ -125,10 +177,22 @@ async function handle2FACheck(coreId, tenantId, res) {
 // ============================================================================
 exports.register = async (req, res) => {
   try {
-    const { firstName, lastName, email, password, phoneNumber } = req.body;
+    const { firstName, lastName, password, phoneNumber } = req.body;
+    const email = normalizeEmail(req.body.email);
 
     if (!email || !password) {
       return res.status(400).json({ error: "Email dan password wajib diisi." });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: "Format email tidak valid." });
+    }
+
+    if (!PASSWORD_REGEX.test(password)) {
+      return res.status(400).json({
+        error:
+          "Password minimal 12 karakter dengan huruf besar, huruf kecil, angka, dan simbol.",
+      });
     }
 
     const existingAuth = await AuthIdentity.findOne({
@@ -141,7 +205,14 @@ exports.register = async (req, res) => {
         .json({ error: "Email sudah terdaftar. Silakan login." });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    if (phoneNumber) {
+      const existingPhone = await User.findOne({ where: { phoneNumber } });
+      if (existingPhone) {
+        return res.status(400).json({ error: "Nomor HP sudah terdaftar." });
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     const result = await Customer.sequelize.transaction(async (t) => {
       const newCustomer = await Customer.create({}, { transaction: t });
@@ -177,7 +248,8 @@ exports.register = async (req, res) => {
       coreId: result,
     });
   } catch (error) {
-    res.status(500).json({ error: "Gagal registrasi: " + error.message });
+    console.error("Register error:", error);
+    res.status(500).json({ error: "Gagal registrasi. Silakan coba lagi." });
   }
 };
 
@@ -186,20 +258,29 @@ exports.register = async (req, res) => {
 // ============================================================================
 exports.loginWithPassword = async (req, res) => {
   try {
-    const { email, password, tenantId } = req.body;
+    const { password, tenantId } = req.body;
+    const email = normalizeEmail(req.body.email);
 
     const authRecord = await AuthIdentity.findOne({
       where: { providerUserId: email, provider: "LOCAL", type: "CREDENTIAL" },
     });
-    if (!authRecord)
-      return res.status(401).json({ error: "Email tidak terdaftar." });
+
+    /*
+     * Error message sengaja generic untuk email-tidak-ada
+     * dan password-salah — jangan bocorkan apakah email
+     * terdaftar (user enumeration attack).
+     */
+    const INVALID_MSG = "Email atau password salah.";
+
+    if (!authRecord) return res.status(401).json({ error: INVALID_MSG });
 
     const isValid = await bcrypt.compare(password, authRecord.passwordHash);
-    if (!isValid) return res.status(401).json({ error: "Password salah." });
+    if (!isValid) return res.status(401).json({ error: INVALID_MSG });
 
     return handle2FACheck(authRecord.coreId, tenantId, res);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("Login error:", error);
+    res.status(500).json({ error: "Terjadi kesalahan saat login." });
   }
 };
 
@@ -222,7 +303,7 @@ exports.loginWithGoogle = async (req, res) => {
       return res.status(401).json({ error: "Token Supabase tidak valid" });
     }
 
-    const email = supabaseUser.email;
+    const email = normalizeEmail(supabaseUser.email);
     const googleId = supabaseUser.user_metadata?.provider_id || supabaseUser.id;
     const fullName = supabaseUser.user_metadata?.full_name || "";
     const [firstName, ...lastNameArr] = fullName.split(" ");
@@ -236,22 +317,50 @@ exports.loginWithGoogle = async (req, res) => {
     let coreId;
 
     if (!authRecord) {
-      const newCustomer = await Customer.create({});
-      coreId = newCustomer.coreId;
-
-      await AuthIdentity.create({
-        coreId: coreId,
-        type: "OAUTH",
-        provider: "GOOGLE",
-        providerUserId: googleId,
+      /*
+       * Account linking: kalau email ini sudah terdaftar via
+       * password lokal, link identitas Google ke akun yang sama
+       * (bukan bikin akun kedua). Google memverifikasi email,
+       * jadi email terverifikasi dari Supabase aman untuk linking.
+       */
+      const localAuth = await AuthIdentity.findOne({
+        where: {
+          providerUserId: email,
+          provider: "LOCAL",
+          type: "CREDENTIAL",
+        },
       });
 
-      await User.create({
-        coreId: coreId,
-        firstName: firstName || "User",
-        lastName: lastName || "",
-        email: email,
-        avatarUrl: picture,
+      await Customer.sequelize.transaction(async (t) => {
+        if (localAuth) {
+          coreId = localAuth.coreId;
+        } else {
+          const newCustomer = await Customer.create({}, { transaction: t });
+          coreId = newCustomer.coreId;
+        }
+
+        await AuthIdentity.create(
+          {
+            coreId: coreId,
+            type: "OAUTH",
+            provider: "GOOGLE",
+            providerUserId: googleId,
+          },
+          { transaction: t },
+        );
+
+        if (!localAuth) {
+          await User.create(
+            {
+              coreId: coreId,
+              firstName: firstName || "User",
+              lastName: lastName || "",
+              email: email,
+              avatarUrl: picture,
+            },
+            { transaction: t },
+          );
+        }
       });
     } else {
       coreId = authRecord.coreId;
@@ -261,9 +370,10 @@ exports.loginWithGoogle = async (req, res) => {
 
     return handle2FACheck(coreId, tenantId, res);
   } catch (error) {
+    console.error("Google login error:", error);
     res
       .status(500)
-      .json({ error: "Gagal memproses Google Login: " + error.message });
+      .json({ error: "Gagal memproses Google Login. Silakan coba lagi." });
   }
 };
 
@@ -303,7 +413,7 @@ exports.setupAuthenticator = async (req, res) => {
       type: "TOTP",
       provider: "AUTHENTICATOR",
       providerUserId: coreId,
-      secretKey: secret,
+      secretKey: encryptSecret(secret),
       status: "PENDING",
     });
 
@@ -316,9 +426,8 @@ exports.setupAuthenticator = async (req, res) => {
 
     res.json({ secret, otpauth });
   } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Gagal setup authenticator: " + error.message });
+    console.error("Setup authenticator error:", error);
+    res.status(500).json({ error: "Gagal setup authenticator." });
   }
 };
 
@@ -341,8 +450,23 @@ exports.verifyAuthenticator = async (req, res) => {
     const coreId = decoded.coreId;
     const tenantId = decoded.tenantId;
 
+    /*
+     * Pilih secret yang benar per konteks:
+     * - pre_auth (login) → record ACTIVE milik user.
+     *   Kalau ada PENDING stale dari setup yang dibatalkan,
+     *   jangan sampai kode ACTIVE user ke-reject.
+     * - full token (setup dari profile) → record PENDING
+     *   yang baru saja dibuat di /2fa/setup.
+     */
+    const expectedStatus = decoded.scope === "pre_auth" ? "ACTIVE" : "PENDING";
+
     const authRecord = await AuthIdentity.findOne({
-      where: { coreId, provider: "AUTHENTICATOR", type: "TOTP" },
+      where: {
+        coreId,
+        provider: "AUTHENTICATOR",
+        type: "TOTP",
+        status: expectedStatus,
+      },
       order: [["created_at", "DESC"]],
     });
 
@@ -351,25 +475,20 @@ exports.verifyAuthenticator = async (req, res) => {
         .status(404)
         .json({ error: "Metode Authenticator belum diatur." });
 
-    // --- DEBUGGING WAKTU & KODE ---
-    const serverTime = new Date().toISOString();
-    const generatedCodeByServer = authenticator.generate(authRecord.secretKey);
+    const secretKey = decryptSecret(authRecord.secretKey);
 
-    console.log("========================================");
-    console.log("🕒 Waktu Server Saat Ini :", serverTime);
-    console.log("🔑 Secret Key di DB     :", authRecord.secretKey);
-    console.log("📱 Kode dari HP (User)  :", totpCode);
-    console.log("💻 Kode Buatan Server   :", generatedCodeByServer);
-    console.log("========================================");
+    /*
+     * Clone instance supaya opsi window tidak mengubah
+     * state global authenticator (aman untuk request konkuren).
+     */
+    const totp = authenticator.clone();
+    totp.options = { window: 2 };
 
-    // Set toleransi jendela waktu lebih longgar (window: 2 berarti ±60 detik)
-    authenticator.options = { window: 2 };
-
-    const isValid = authenticator.check(totpCode, authRecord.secretKey);
+    const isValid = totp.check(String(totpCode).trim(), secretKey);
 
     if (!isValid) {
       return res.status(401).json({
-        error: `Kode salah. (HP: ${totpCode} vs Server: ${generatedCodeByServer}). Cek sinkronisasi jam PC Anda!`,
+        error: "Kode authenticator salah atau kadaluarsa.",
       });
     }
 
@@ -397,7 +516,8 @@ exports.verifyAuthenticator = async (req, res) => {
     const authData = await generateAuthResponse(coreId, tenantId);
     res.json({ message: "2FA Berhasil, Login Sukses!", ...authData });
   } catch (error) {
-    res.status(500).json({ error: "Gagal verifikasi: " + error.message });
+    console.error("Verify authenticator error:", error);
+    res.status(500).json({ error: "Gagal verifikasi." });
   }
 };
 
@@ -417,14 +537,22 @@ exports.verifyTransaction2FA = async (req, res) => {
     const coreId = decoded.coreId;
 
     const authRecord = await AuthIdentity.findOne({
-      where: { coreId, provider: "AUTHENTICATOR", type: "TOTP" },
+      where: {
+        coreId,
+        provider: "AUTHENTICATOR",
+        type: "TOTP",
+        status: "ACTIVE",
+      },
     });
 
     if (!authRecord || !authRecord.secretKey)
       return res.status(404).json({ error: "Authenticator belum diatur." });
 
-    authenticator.options = { window: 1 };
-    const isValid = authenticator.check(totpCode, authRecord.secretKey);
+    const secretKey = decryptSecret(authRecord.secretKey);
+    const totp = authenticator.clone();
+    totp.options = { window: 1 };
+
+    const isValid = totp.check(String(totpCode).trim(), secretKey);
 
     if (!isValid) {
       return res
@@ -434,7 +562,8 @@ exports.verifyTransaction2FA = async (req, res) => {
 
     res.json({ message: "2FA Transaksi Berhasil!" });
   } catch (error) {
-    res.status(500).json({ error: "Gagal verifikasi: " + error.message });
+    console.error("Verify tx 2FA error:", error);
+    res.status(500).json({ error: "Gagal verifikasi." });
   }
 };
 
@@ -463,7 +592,8 @@ exports.get2FAStatus = async (req, res) => {
 
     res.json({ success: true, enabled: Boolean(totpRecord) });
   } catch (error) {
-    res.status(500).json({ error: "Gagal cek status 2FA: " + error.message });
+    console.error("2FA status error:", error);
+    res.status(500).json({ error: "Gagal cek status 2FA." });
   }
 };
 
@@ -501,8 +631,11 @@ exports.disableAuthenticator = async (req, res) => {
         .status(404)
         .json({ error: "Authenticator belum aktif di akun ini." });
 
-    authenticator.options = { window: 1 };
-    const isValid = authenticator.check(totpCode, authRecord.secretKey);
+    const secretKey = decryptSecret(authRecord.secretKey);
+    const totp = authenticator.clone();
+    totp.options = { window: 1 };
+
+    const isValid = totp.check(String(totpCode).trim(), secretKey);
 
     if (!isValid) {
       return res
@@ -518,8 +651,7 @@ exports.disableAuthenticator = async (req, res) => {
       message: "Authenticator berhasil dinonaktifkan.",
     });
   } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Gagal menonaktifkan authenticator: " + error.message });
+    console.error("Disable authenticator error:", error);
+    res.status(500).json({ error: "Gagal menonaktifkan authenticator." });
   }
 };
