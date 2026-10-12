@@ -13,21 +13,17 @@ const verifyToken = (req, res, next) => {
     });
   }
 
-  jwt.verify(
-    token,
-    process.env.JWT_SECRET || "Valoracore77!",
-    (err, decodedUser) => {
-      if (err) {
-        return res.status(403).json({
-          success: false,
-          message: "Token tidak valid atau sudah kedaluwarsa.",
-        });
-      }
+  jwt.verify(token, process.env.JWT_SECRET, (err, decodedUser) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: "Token tidak valid atau sudah kedaluwarsa.",
+      });
+    }
 
-      req.user = decodedUser;
-      next();
-    },
-  );
+    req.user = decodedUser;
+    next();
+  });
 };
 
 module.exports = { verifyToken };

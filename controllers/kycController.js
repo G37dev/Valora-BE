@@ -1,4 +1,8 @@
 const { KycProfile, User } = require("../models");
+const veriffService = require("../services/veriffService");
+
+const PUBLIC_API_URL =
+  process.env.PUBLIC_API_URL || "https://valora-be.vercel.app";
 
 // @desc    Get data KYC berdasarkan coreId
 // @route   GET /api/kyc/:coreId
@@ -96,5 +100,149 @@ exports.submitKyc = async (req, res) => {
       message: "Terjadi kesalahan pada server saat submit KYC",
       error: error.message,
     });
+  }
+};
+
+// ============================================================================
+// VERIFF — hosted identity verification
+// ============================================================================
+
+// @desc    Buat Veriff verification session → return hosted url
+// @route   POST /api/kyc/veriff/session
+exports.createVeriffSession = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+    if (!coreId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Token tidak valid." });
+    }
+
+    const user = await User.findOne({ where: { coreId } });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User tidak ditemukan." });
+    }
+
+    let kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    if (kyc?.status === "VERIFIED") {
+      return res.status(400).json({
+        success: false,
+        message: "KYC Anda sudah terverifikasi.",
+      });
+    }
+    if (kyc?.status === "PENDING" && kyc.provider_id === "veriff") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Verifikasi Anda sedang diproses. Tunggu hasilnya terlebih dahulu.",
+      });
+    }
+
+    const session = await veriffService.createSession({
+      coreId,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      callback: `${PUBLIC_API_URL}/api/kyc/veriff/webhook`,
+    });
+
+    if (!kyc) {
+      kyc = await KycProfile.create({
+        core_id: coreId,
+        status: "PENDING",
+        provider_id: "veriff",
+        provider_reference: session.id,
+        verification_source: "veriff",
+        metadata: { sessionUrl: session.url },
+      });
+    } else {
+      await kyc.update({
+        status: "PENDING",
+        provider_id: "veriff",
+        provider_reference: session.id,
+        verification_source: "veriff",
+        metadata: { sessionUrl: session.url },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        url: session.url,
+        sessionId: session.id,
+      },
+    });
+  } catch (error) {
+    console.error("Error create Veriff session:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Gagal membuat sesi verifikasi.",
+    });
+  }
+};
+
+// @desc    Webhook decision dari Veriff (public — diverifikasi via signature)
+// @route   POST /api/kyc/veriff/webhook
+exports.veriffWebhook = async (req, res) => {
+  try {
+    const signature =
+      req.headers["x-hmac-signature"] ||
+      req.headers["X-HMAC-SIGNATURE".toLowerCase()];
+
+    if (!veriffService.verifyWebhookSignature(req.rawBody || "", signature)) {
+      console.warn("[Veriff] Webhook signature tidak valid — ditolak.");
+      return res
+        .status(401)
+        .json({ success: false, message: "Signature tidak valid." });
+    }
+
+    const verification = req.body?.verification || req.body;
+    const coreId = verification?.vendorData;
+    const status = String(verification?.status || "").toLowerCase();
+    const sessionId = verification?.id;
+
+    if (!coreId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "vendorData tidak ada." });
+    }
+
+    const kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    if (!kyc) {
+      return res
+        .status(404)
+        .json({ success: false, message: "KYC tidak ditemukan." });
+    }
+
+    const statusMap = {
+      approved: "VERIFIED",
+      declined: "REJECTED",
+      resubmission_requested: "PENDING",
+      expired: "REJECTED",
+      abandoned: "UNVERIFIED",
+    };
+    const newStatus = statusMap[status];
+    if (!newStatus) {
+      // event non-decision (started/submitted) — cukup ack
+      return res.status(200).json({ success: true, ignored: status });
+    }
+
+    await kyc.update({
+      status: newStatus,
+      provider_reference: sessionId || kyc.provider_reference,
+      verified_at: newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+      metadata: {
+        ...(kyc.metadata || {}),
+        lastDecision: status,
+        decidedAt: new Date().toISOString(),
+      },
+    });
+
+    console.log(`[Veriff] KYC ${coreId} → ${newStatus}`);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Error Veriff webhook:", error);
+    return res.status(500).json({ success: false });
   }
 };
