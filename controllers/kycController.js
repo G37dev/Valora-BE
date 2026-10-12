@@ -140,12 +140,18 @@ exports.createVeriffSession = async (req, res) => {
       });
     }
 
+    const { documentCountry, documentType } = req.body || {};
+
     const session = await veriffService.createSession({
       coreId,
       firstName: user.firstName,
       lastName: user.lastName,
+      documentCountry,
+      documentType,
       callback: `${PUBLIC_API_URL}/api/kyc/veriff/webhook`,
     });
+
+    const metadata = { sessionUrl: session.url, documentCountry, documentType };
 
     if (!kyc) {
       kyc = await KycProfile.create({
@@ -154,7 +160,7 @@ exports.createVeriffSession = async (req, res) => {
         provider_id: "veriff",
         provider_reference: session.id,
         verification_source: "veriff",
-        metadata: { sessionUrl: session.url },
+        metadata,
       });
     } else {
       await kyc.update({
@@ -162,7 +168,7 @@ exports.createVeriffSession = async (req, res) => {
         provider_id: "veriff",
         provider_reference: session.id,
         verification_source: "veriff",
-        metadata: { sessionUrl: session.url },
+        metadata,
       });
     }
 

@@ -11,17 +11,21 @@ function isConfigured() {
 }
 
 function sign(payload) {
-  return crypto
-    .createHmac("sha256", API_SECRET)
-    .update(payload)
-    .digest("hex");
+  return crypto.createHmac("sha256", API_SECRET).update(payload).digest("hex");
 }
 
 /*
  * Buat verification session baru di Veriff.
  * Return { id, url, sessionToken } — url = hosted verification page.
  */
-async function createSession({ coreId, firstName, lastName, callback }) {
+async function createSession({
+  coreId,
+  firstName,
+  lastName,
+  documentCountry,
+  documentType,
+  callback,
+}) {
   if (!isConfigured()) {
     throw new Error("Veriff belum dikonfigurasi (VERIFF_API_KEY/SECRET).");
   }
@@ -35,6 +39,12 @@ async function createSession({ coreId, firstName, lastName, callback }) {
         firstName: firstName || undefined,
         lastName: lastName || undefined,
       },
+      document: documentCountry
+        ? {
+            country: documentCountry,
+            type: documentType || undefined,
+          }
+        : undefined,
     },
   });
 
