@@ -303,6 +303,22 @@ exports.loginWithGoogle = async (req, res) => {
       return res.status(401).json({ error: "Token Supabase tidak valid" });
     }
 
+    /*
+     * Pastikan user ini beneran authenticated via Google dan
+     * email-nya terverifikasi sebelum dipakai untuk account
+     * linking — jangan sampai Supabase account dengan email
+     * unconfirmed bisa di-link ke akun lokal orang lain.
+     */
+    const isGoogleIdentity =
+      supabaseUser.app_metadata?.provider === "google" ||
+      (supabaseUser.identities || []).some((i) => i.provider === "google");
+
+    if (!isGoogleIdentity || !supabaseUser.email_confirmed_at) {
+      return res.status(401).json({
+        error: "Akun Google tidak valid atau email belum terverifikasi.",
+      });
+    }
+
     const email = normalizeEmail(supabaseUser.email);
     const googleId = supabaseUser.user_metadata?.provider_id || supabaseUser.id;
     const fullName = supabaseUser.user_metadata?.full_name || "";
