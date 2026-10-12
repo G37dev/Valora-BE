@@ -437,3 +437,89 @@ exports.verifyTransaction2FA = async (req, res) => {
     res.status(500).json({ error: "Gagal verifikasi: " + error.message });
   }
 };
+
+// ============================================================================
+// METODE 3D: 2FA STATUS — apakah user punya authenticator aktif
+// ============================================================================
+exports.get2FAStatus = async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader)
+      return res.status(401).json({ error: "Token tidak ditemukan" });
+
+    const decoded = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
+
+    if (!decoded.coreId)
+      return res.status(403).json({ error: "Token tidak valid" });
+
+    const totpRecord = await AuthIdentity.findOne({
+      where: {
+        coreId: decoded.coreId,
+        provider: "AUTHENTICATOR",
+        type: "TOTP",
+        status: "ACTIVE",
+      },
+    });
+
+    res.json({ success: true, enabled: Boolean(totpRecord) });
+  } catch (error) {
+    res.status(500).json({ error: "Gagal cek status 2FA: " + error.message });
+  }
+};
+
+// ============================================================================
+// METODE 3E: DISABLE AUTHENTICATOR
+// Wajib kode OTP yang sedang aktif — session yang dicuri tidak bisa
+// mematikan 2FA tanpa akses ke authenticator.
+// ============================================================================
+exports.disableAuthenticator = async (req, res) => {
+  try {
+    const { token: totpCode } = req.body;
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader)
+      return res.status(401).json({ error: "Token tidak ditemukan" });
+
+    const decoded = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
+
+    if (!decoded.coreId)
+      return res.status(403).json({ error: "Token tidak valid" });
+
+    const coreId = decoded.coreId;
+
+    const authRecord = await AuthIdentity.findOne({
+      where: {
+        coreId,
+        provider: "AUTHENTICATOR",
+        type: "TOTP",
+        status: "ACTIVE",
+      },
+    });
+
+    if (!authRecord || !authRecord.secretKey)
+      return res
+        .status(404)
+        .json({ error: "Authenticator belum aktif di akun ini." });
+
+    authenticator.options = { window: 1 };
+    const isValid = authenticator.check(totpCode, authRecord.secretKey);
+
+    if (!isValid) {
+      return res
+        .status(401)
+        .json({ error: "Kode Authenticator salah atau kadaluarsa." });
+    }
+
+    authRecord.status = "INACTIVE";
+    await authRecord.save();
+
+    res.json({
+      success: true,
+      message: "Authenticator berhasil dinonaktifkan.",
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ error: "Gagal menonaktifkan authenticator: " + error.message });
+  }
+};

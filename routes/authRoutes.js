@@ -17,5 +17,9 @@ router.post("/2fa/setup", authController.setupAuthenticator);
 // Memverifikasi 6 digit kode dari aplikasi Authenticator (Untuk Setup maupun Login)
 router.post("/2fa/verify", authController.verifyAuthenticator);
 router.post("/2fa/verify-tx", authController.verifyTransaction2FA);
+// Status 2FA aktif/tidak (butuh JWT login)
+router.get("/2fa/status", authController.get2FAStatus);
+// Nonaktifkan authenticator (butuh JWT + kode OTP aktif)
+router.post("/2fa/disable", authController.disableAuthenticator);
 
 module.exports = router;
