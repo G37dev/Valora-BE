@@ -75,8 +75,55 @@ function verifyWebhookSignature(rawBody, signature) {
   return crypto.timingSafeEqual(a, b);
 }
 
+/*
+ * Ambil decision verifikasi (GET /sessions/:id/decision).
+ * Signature untuk GET = HMAC(sessionId). Return null kalau
+ * decision belum keluar.
+ */
+async function getDecision(sessionId) {
+  if (!isConfigured()) {
+    throw new Error("Veriff belum dikonfigurasi (VERIFF_API_KEY/SECRET).");
+  }
+
+  const { data } = await axios.get(
+    `${BASE_URL}/sessions/${sessionId}/decision`,
+    {
+      headers: {
+        "X-AUTH-CLIENT": API_KEY,
+        "X-HMAC-SIGNATURE": sign(sessionId),
+      },
+      timeout: 15_000,
+    },
+  );
+
+  return data?.verification || null;
+}
+
+/*
+ * Map decision Veriff → status KycProfile lokal.
+ */
+function mapDecisionToStatus(decision) {
+  switch (String(decision || "").toLowerCase()) {
+    case "approved":
+      return "VERIFIED";
+    case "declined":
+      return "REJECTED";
+    case "resubmission_requested":
+    case "in_review":
+      return "PENDING";
+    case "abandoned":
+      return "UNVERIFIED";
+    case "expired":
+      return "REJECTED";
+    default:
+      return null;
+  }
+}
+
 module.exports = {
   isConfigured,
   createSession,
+  getDecision,
+  mapDecisionToStatus,
   verifyWebhookSignature,
 };

@@ -1,9 +1,6 @@
 const { KycProfile, User } = require("../models");
 const veriffService = require("../services/veriffService");
 
-const PUBLIC_API_URL =
-  process.env.PUBLIC_API_URL || "https://valora-be.vercel.app";
-
 // @desc    Get data KYC berdasarkan coreId
 // @route   GET /api/kyc/:coreId
 exports.getKyc = async (req, res) => {
@@ -11,7 +8,7 @@ exports.getKyc = async (req, res) => {
     const { coreId } = req.params;
 
     // Cari data KYC di database
-    const kyc = await KycProfile.findOne({
+    let kyc = await KycProfile.findOne({
       where: { core_id: coreId },
     });
 
@@ -20,6 +17,42 @@ exports.getKyc = async (req, res) => {
         success: false,
         message: "Data KYC tidak ditemukan untuk user ini.",
       });
+    }
+
+    /*
+     * Auto-sync: kalau masih PENDING dan punya session Veriff,
+     * tanya decision terbaru langsung ke Veriff API. Cadangan
+     * kalau webhook belum dikonfigurasi / terlambat.
+     */
+    if (
+      kyc.status === "PENDING" &&
+      kyc.provider_id === "veriff" &&
+      kyc.provider_reference &&
+      veriffService.isConfigured()
+    ) {
+      try {
+        const decision = await veriffService.getDecision(
+          kyc.provider_reference,
+        );
+        const newStatus = veriffService.mapDecisionToStatus(
+          decision?.status || decision?.decision || decision,
+        );
+        if (newStatus && newStatus !== "PENDING") {
+          await kyc.update({
+            status: newStatus,
+            verified_at:
+              newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+            metadata: {
+              ...(kyc.metadata || {}),
+              lastDecision: decision?.status || decision?.decision,
+              syncedAt: new Date().toISOString(),
+            },
+          });
+          kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+        }
+      } catch (syncErr) {
+        console.warn("[Veriff] Sync decision gagal:", syncErr.message);
+      }
     }
 
     return res.status(200).json({
@@ -148,7 +181,7 @@ exports.createVeriffSession = async (req, res) => {
       lastName: user.lastName,
       documentCountry,
       documentType,
-      callback: `${PUBLIC_API_URL}/api/kyc/veriff/webhook`,
+      callback: "valoramobile://kyc-screen",
     });
 
     const metadata = { sessionUrl: session.url, documentCountry, documentType };
