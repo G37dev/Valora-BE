@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Wallet, Transaction } = require("../models");
+const { Wallet, Transaction, Swap, InternalTransaction } = require("../models");
 const {
   createThirdwebClient,
   getContract,
@@ -88,9 +88,70 @@ exports.getUserTransactions = async (req, res) => {
       }),
     );
 
+    /*
+     * Global history: gabungkan transaksi on-chain (tabel
+     * Transactions) dengan Swap dan ledger InternalTransaction
+     * (top-up IDR, pembayaran installment, refund, dsb).
+     * Entry ledger yang terkait swap_id di-skip karena sudah
+     * terwakili oleh row Swap itu sendiri.
+     */
+    const [swaps, internalTxs] = await Promise.all([
+      Swap.findAll({
+        where: { core_id: coreId },
+        order: [["createdAt", "DESC"]],
+      }),
+      InternalTransaction.findAll({
+        where: { core_id: coreId, swap_id: null },
+        order: [["createdAt", "DESC"]],
+      }),
+    ]);
+
+    const swapRows = swaps.map((s) => ({
+      id: `swap-${s.id}`,
+      type: "SWAP",
+      asset: s.from_asset,
+      amount: s.from_amount,
+      toAsset: s.to_asset,
+      toAmount: s.to_amount,
+      direction: "DEBIT",
+      status: s.status === "PROCESSING" ? "PENDING" : s.status,
+      confirmations: 0,
+      requiredConfirmations: 0,
+      description: `Swap ${s.from_asset} → ${s.to_asset}`,
+      createdAt: s.createdAt,
+    }));
+
+    const inferInternalType = (t) => {
+      const ref = String(t.reference || "").toUpperCase();
+      const desc = String(t.description || "").toUpperCase();
+      if (t.topupId || ref.includes("TOPUP") || ref.includes("TOP_UP"))
+        return "TOPUP";
+      if (ref.includes("INSTALLMENT") || desc.includes("INSTALLMENT"))
+        return "INSTALLMENT";
+      if (ref.includes("REFUND") || desc.includes("REFUND")) return "REFUND";
+      return "TRANSFER";
+    };
+
+    const internalRows = internalTxs.map((t) => ({
+      id: `itx-${t.id}`,
+      type: inferInternalType(t),
+      asset: t.asset,
+      amount: t.amount,
+      direction: t.type, // CREDIT / DEBIT
+      status: t.status,
+      confirmations: 0,
+      requiredConfirmations: 0,
+      description: t.description || null,
+      createdAt: t.createdAt,
+    }));
+
+    const merged = [...formattedData, ...swapRows, ...internalRows].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+    );
+
     return res.status(200).json({
       success: true,
-      data: formattedData,
+      data: merged,
     });
   } catch (error) {
     console.error("Gagal mengambil transaksi:", error);
