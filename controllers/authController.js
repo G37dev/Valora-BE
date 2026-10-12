@@ -1,5 +1,6 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const { Op } = require("sequelize");
 const { authenticator } = require("otplib");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -375,6 +376,22 @@ exports.verifyAuthenticator = async (req, res) => {
     if (authRecord.status === "PENDING") {
       authRecord.status = "ACTIVE";
       await authRecord.save();
+
+      /*
+       * Setup ulang: nonaktifkan record TOTP lama
+       * supaya cuma satu secret yang aktif.
+       */
+      await AuthIdentity.update(
+        { status: "INACTIVE" },
+        {
+          where: {
+            coreId,
+            provider: "AUTHENTICATOR",
+            type: "TOTP",
+            id: { [Op.ne]: authRecord.id },
+          },
+        },
+      );
     }
 
     const authData = await generateAuthResponse(coreId, tenantId);
