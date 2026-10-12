@@ -361,27 +361,10 @@ exports.createDiditSession = async (req, res) => {
       callback: "valoramobile://kyc-screen",
     });
 
+    // KycProfile sengaja TIDAK ditulis di sini — user bisa saja buka
+    // flow Didit lalu cancel. Record baru dibuat oleh webhook begitu
+    // user benar-benar submit (status "In Review"/decision final).
     const sessionId = session.session_id || session.id;
-    const metadata = { sessionUrl: session.url };
-
-    if (!kyc) {
-      kyc = await KycProfile.create({
-        core_id: coreId,
-        status: "PENDING",
-        provider_id: "didit",
-        provider_reference: sessionId,
-        verification_source: "didit",
-        metadata,
-      });
-    } else {
-      await kyc.update({
-        status: "PENDING",
-        provider_id: "didit",
-        provider_reference: sessionId,
-        verification_source: "didit",
-        metadata,
-      });
-    }
 
     return res.status(200).json({
       success: true,
@@ -427,14 +410,49 @@ exports.diditWebhook = async (req, res) => {
         .json({ success: false, message: "vendor_data tidak ada." });
     }
 
-    const kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    const newStatus = diditService.mapStatusToLocal(status);
+    let kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+
     if (!kyc) {
-      return res
-        .status(404)
-        .json({ success: false, message: "KYC tidak ditemukan." });
+      /*
+       * Belum ada record → sesi dibuka tapi user belum submit.
+       * Baru catat kalau statusnya menandakan submission
+       * ("In Review"/"Resubmitted") atau decision final.
+       */
+      const submitted =
+        status === "In Review" ||
+        status === "Resubmitted" ||
+        newStatus === "VERIFIED" ||
+        newStatus === "REJECTED";
+      if (!submitted || !newStatus) {
+        return res.status(200).json({ success: true, ignored: status });
+      }
+
+      const user = await User.findOne({ where: { coreId } });
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, message: "KYC tidak ditemukan." });
+      }
+
+      kyc = await KycProfile.create({
+        core_id: coreId,
+        status: newStatus,
+        provider_id: "didit",
+        provider_reference: sessionId,
+        verification_source: "didit",
+        verified_at: newStatus === "VERIFIED" ? new Date() : null,
+        metadata: {
+          lastDecision: status,
+          decidedAt: new Date().toISOString(),
+          webhookEventId: payload.event_id,
+        },
+      });
+
+      console.log(`[Didit] KYC ${coreId} → ${newStatus} (${status}) [created]`);
+      return res.status(200).json({ success: true });
     }
 
-    const newStatus = diditService.mapStatusToLocal(status);
     if (!newStatus) {
       // event/status yang tidak kita proses — cukup ack
       return res.status(200).json({ success: true, ignored: status });
