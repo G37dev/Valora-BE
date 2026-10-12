@@ -1,5 +1,6 @@
 const { KycProfile, User } = require("../models");
 const veriffService = require("../services/veriffService");
+const diditService = require("../services/diditService");
 
 // @desc    Get data KYC berdasarkan coreId
 // @route   GET /api/kyc/:coreId
@@ -52,6 +53,38 @@ exports.getKyc = async (req, res) => {
         }
       } catch (syncErr) {
         console.warn("[Veriff] Sync decision gagal:", syncErr.message);
+      }
+    }
+
+    /*
+     * Auto-sync Didit — sama seperti Veriff di atas, tapi pakai
+     * GET /v3/session/{id}/decision/ dan status envelope Didit.
+     */
+    if (
+      kyc.status === "PENDING" &&
+      kyc.provider_id === "didit" &&
+      kyc.provider_reference &&
+      diditService.isConfigured()
+    ) {
+      try {
+        const decision = await diditService.getDecision(kyc.provider_reference);
+        const status = decision?.status || decision?.session?.status;
+        const newStatus = diditService.mapStatusToLocal(status);
+        if (newStatus && newStatus !== "PENDING") {
+          await kyc.update({
+            status: newStatus,
+            verified_at:
+              newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+            metadata: {
+              ...(kyc.metadata || {}),
+              lastDecision: status,
+              syncedAt: new Date().toISOString(),
+            },
+          });
+          kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+        }
+      } catch (syncErr) {
+        console.warn("[Didit] Sync decision gagal:", syncErr.message);
       }
     }
 
@@ -282,6 +315,147 @@ exports.veriffWebhook = async (req, res) => {
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error Veriff webhook:", error);
+    return res.status(500).json({ success: false });
+  }
+};
+
+// ============================================================================
+// DIDIT — identity verification (workflow-based)
+// ============================================================================
+
+// @desc    Buat Didit verification session → return url + session_token
+// @route   POST /api/kyc/didit/session
+exports.createDiditSession = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+    if (!coreId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Token tidak valid." });
+    }
+
+    const user = await User.findOne({ where: { coreId } });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User tidak ditemukan." });
+    }
+
+    let kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    if (kyc?.status === "VERIFIED") {
+      return res.status(400).json({
+        success: false,
+        message: "KYC Anda sudah terverifikasi.",
+      });
+    }
+    if (kyc?.status === "PENDING" && kyc.provider_id === "didit") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Verifikasi Anda sedang diproses. Tunggu hasilnya terlebih dahulu.",
+      });
+    }
+
+    const session = await diditService.createSession({
+      coreId,
+      callback: "valoramobile://kyc-screen",
+    });
+
+    const sessionId = session.session_id || session.id;
+    const metadata = { sessionUrl: session.url };
+
+    if (!kyc) {
+      kyc = await KycProfile.create({
+        core_id: coreId,
+        status: "PENDING",
+        provider_id: "didit",
+        provider_reference: sessionId,
+        verification_source: "didit",
+        metadata,
+      });
+    } else {
+      await kyc.update({
+        status: "PENDING",
+        provider_id: "didit",
+        provider_reference: sessionId,
+        verification_source: "didit",
+        metadata,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        url: session.url,
+        sessionId,
+        sessionToken: session.session_token,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Error create Didit session:",
+      error?.response?.data || error,
+    );
+    return res.status(500).json({
+      success: false,
+      message: "Gagal membuat sesi verifikasi.",
+    });
+  }
+};
+
+// @desc    Webhook event dari Didit (public — diverifikasi via X-Signature)
+// @route   POST /api/kyc/didit/webhook
+exports.diditWebhook = async (req, res) => {
+  try {
+    const signature = req.headers["x-signature"];
+
+    if (!diditService.verifyWebhookSignature(req.rawBody || "", signature)) {
+      console.warn("[Didit] Webhook signature tidak valid — ditolak.");
+      return res
+        .status(401)
+        .json({ success: false, message: "Signature tidak valid." });
+    }
+
+    const payload = req.body || {};
+    const coreId = payload.vendor_data;
+    const status = payload.status;
+    const sessionId = payload.session_id;
+
+    if (!coreId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "vendor_data tidak ada." });
+    }
+
+    const kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    if (!kyc) {
+      return res
+        .status(404)
+        .json({ success: false, message: "KYC tidak ditemukan." });
+    }
+
+    const newStatus = diditService.mapStatusToLocal(status);
+    if (!newStatus) {
+      // event/status yang tidak kita proses — cukup ack
+      return res.status(200).json({ success: true, ignored: status });
+    }
+
+    await kyc.update({
+      status: newStatus,
+      provider_reference: sessionId || kyc.provider_reference,
+      verified_at: newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+      metadata: {
+        ...(kyc.metadata || {}),
+        lastDecision: status,
+        decidedAt: new Date().toISOString(),
+        webhookEventId: payload.event_id,
+      },
+    });
+
+    console.log(`[Didit] KYC ${coreId} → ${newStatus} (${status})`);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Error Didit webhook:", error);
     return res.status(500).json({ success: false });
   }
 };

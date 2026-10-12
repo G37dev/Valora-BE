@@ -15,4 +15,10 @@ router.post("/veriff/session", verifyToken, kycController.createVeriffSession);
 // Veriff — webhook decision (public, diverifikasi via HMAC signature)
 router.post("/veriff/webhook", kycController.veriffWebhook);
 
+// Didit — buat session verifikasi (butuh login)
+router.post("/didit/session", verifyToken, kycController.createDiditSession);
+
+// Didit — webhook status update (public, diverifikasi via X-Signature HMAC)
+router.post("/didit/webhook", kycController.diditWebhook);
+
 module.exports = router;
