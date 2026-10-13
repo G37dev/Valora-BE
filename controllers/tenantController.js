@@ -83,6 +83,7 @@ exports.registerOrLinkCustomer = async (req, res) => {
               email,
               firstName: firstName || "User Tenant",
               lastName: lastName || "",
+              avatarUrl: `a${1 + Math.floor(Math.random() * 6)}`,
             },
             { transaction: t },
           );

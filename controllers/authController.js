@@ -38,6 +38,9 @@ const PASSWORD_REGEX =
 
 const BCRYPT_ROUNDS = 12;
 
+// Avatar preset "a1"-"a6" — key file di assets/images/profile pada app.
+const randomAvatar = () => `a${1 + Math.floor(Math.random() * 6)}`;
+
 /*
  * Enkripsi TOTP secret at-rest (AES-256-GCM).
  * Butuh env TOTP_ENCRYPTION_KEY — kalau tidak di-set,
@@ -246,6 +249,7 @@ exports.register = async (req, res) => {
           lastName: lastName,
           email: email,
           phoneNumber: phoneNumber,
+          avatarUrl: randomAvatar(),
         },
         { transaction: t },
       );
@@ -334,7 +338,6 @@ exports.loginWithGoogle = async (req, res) => {
     const fullName = supabaseUser.user_metadata?.full_name || "";
     const [firstName, ...lastNameArr] = fullName.split(" ");
     const lastName = lastNameArr.join(" ");
-    const picture = supabaseUser.user_metadata?.avatar_url;
 
     let authRecord = await AuthIdentity.findOne({
       where: { providerUserId: googleId, provider: "GOOGLE" },
@@ -382,7 +385,7 @@ exports.loginWithGoogle = async (req, res) => {
               firstName: firstName || "User",
               lastName: lastName || "",
               email: email,
-              avatarUrl: picture,
+              avatarUrl: randomAvatar(),
             },
             { transaction: t },
           );
