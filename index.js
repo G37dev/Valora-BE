@@ -72,7 +72,7 @@ app.get("/", (req, res) => {
 app.get("/.well-known/assetlinks.json", (req, res) => {
   const fingerprints = (
     process.env.ASSETLINKS_FINGERPRINTS ||
-    "D5:88:46:5A:39:03:7D:49:A8:9A:CC:36:8D:65:1A:CB:81:00:62:39:65:F2:7D:1C:71:DF:05:28:98:A6:BD:54,FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C"
+    "D5:88:46:5A:39:03:7D:49:A8:9A:CC:36:8D:65:1A:CB:81:00:62:39:65:F2:7D:1C:71:DF:05:28:98:A6:BD:54,FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C,A5:E8:3E:11:D1:D6:12:AE:55:E4:14:FC:64:B6:42:31:2C:51:B4:9E:A3:77:CA:9C:EE:93:46:92:19:B0:FD:D0"
   ).split(",");
 
   res.json(

@@ -29,7 +29,7 @@ const RP_ID = process.env.WEBAUTHN_RP_ID || "valora-be.vercel.app";
  */
 const ALLOWED_ORIGINS = (
   process.env.WEBAUTHN_ORIGINS ||
-  `https://${RP_ID},android:apk-key-hash:1YhGWjkDfUmomsw2jWUay4EAYjll8n0ccd8FKJimvVQ,android:apk-key-hash:-sYXRdwJA3hvue3mKpYrOZ9zSPC7b4mbgzJmdZEDO5w`
+  `https://${RP_ID},android:apk-key-hash:1YhGWjkDfUmomsw2jWUay4EAYjll8n0ccd8FKJimvVQ,android:apk-key-hash:-sYXRdwJA3hvue3mKpYrOZ9zSPC7b4mbgzJmdZEDO5w,android:apk-key-hash:peg-EdHWEq5V5BT8ZLZCMSxRtJ6jd8qc7pNGkhmw_dA`
 ).split(",");
 
 const CHALLENGE_TTL = 300; // 5 menit
