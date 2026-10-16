@@ -4,6 +4,9 @@ const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const { authenticator } = require("otplib");
 const { createClient } = require("@supabase/supabase-js");
+const {
+  normalizePhone: normalizeWaPhone,
+} = require("../services/waOtpService");
 
 const {
   Customer,
@@ -190,7 +193,7 @@ async function handle2FACheck(coreId, tenantId, res) {
 // ============================================================================
 exports.register = async (req, res) => {
   try {
-    const { firstName, lastName, password, phoneNumber } = req.body;
+    const { firstName, lastName, password, phoneNumber, otpTicket } = req.body;
     const email = normalizeEmail(req.body.email);
 
     if (!email || !password) {
@@ -222,6 +225,38 @@ exports.register = async (req, res) => {
       const existingPhone = await User.findOne({ where: { phoneNumber } });
       if (existingPhone) {
         return res.status(400).json({ error: "Nomor HP sudah terdaftar." });
+      }
+    }
+
+    /*
+     * WA OTP — kalau otpTicket dikirim (atau REQUIRE_PHONE_OTP=true),
+     * tiket harus valid dan nomor-nya harus sama dengan yang diregister.
+     * Tiket dikeluarkan /auth/otp/verify setelah user memasukkan kode WA.
+     */
+    if (otpTicket || process.env.REQUIRE_PHONE_OTP === "true") {
+      if (!otpTicket) {
+        return res.status(400).json({
+          error: "Verifikasi nomor WhatsApp wajib sebelum mendaftar.",
+        });
+      }
+      try {
+        const ticket = jwt.verify(otpTicket, JWT_SECRET);
+        const ticketPhone = normalizeWaPhone(ticket.phone);
+        const regPhone = normalizeWaPhone(phoneNumber);
+        if (
+          ticket.scope !== "wa_otp" ||
+          ticket.purpose !== "register" ||
+          !ticketPhone ||
+          ticketPhone !== regPhone
+        ) {
+          return res
+            .status(400)
+            .json({ error: "Bukti verifikasi nomor tidak valid." });
+        }
+      } catch {
+        return res
+          .status(400)
+          .json({ error: "Bukti verifikasi kadaluarsa. Ulangi OTP." });
       }
     }
 
