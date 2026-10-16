@@ -1,5 +1,9 @@
 const { User, KycProfile, Wallet, UserPushToken } = require("../models"); // Pastikan KycProfile dan Wallet di-import
 const { sendPushToUser } = require("../services/pushService");
+const { normalizePhone } = require("../services/waOtpService");
+const jwt = require("jsonwebtoken");
+
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // @desc    Get user profile by coreId
 // @route   GET /api/users/:coreId
@@ -69,7 +73,8 @@ exports.getUser = async (req, res) => {
 exports.editUser = async (req, res) => {
   try {
     const { coreId } = req.params;
-    const { firstName, lastName, email, phoneNumber, avatarUrl } = req.body;
+    const { firstName, lastName, email, phoneNumber, avatarUrl, otpTicket } =
+      req.body;
 
     // 1. Cari user berdasarkan coreId
     const user = await User.findOne({ where: { coreId } });
@@ -81,12 +86,53 @@ exports.editUser = async (req, res) => {
       });
     }
 
+    /*
+     * Ganti/tambah nomor HP → wajib otpTicket purpose "change-phone"
+     * (dikeluarkan /auth/otp/verify setelah user memasukkan kode WA
+     * yang dikirim ke nomor baru).
+     */
+    const normalizedNewPhone = normalizePhone(phoneNumber);
+    if (phoneNumber !== undefined && !normalizedNewPhone) {
+      return res.status(400).json({ error: "Invalid phone number." });
+    }
+    const phoneChanged =
+      phoneNumber !== undefined &&
+      normalizedNewPhone !== normalizePhone(user.phoneNumber);
+
+    if (phoneChanged) {
+      const existingPhone = await User.findOne({
+        where: { phoneNumber: normalizedNewPhone },
+      });
+      if (existingPhone && existingPhone.coreId !== user.coreId) {
+        return res
+          .status(409)
+          .json({ error: "This phone number is already registered." });
+      }
+      try {
+        const ticket = jwt.verify(otpTicket || "", JWT_SECRET);
+        if (
+          ticket.scope !== "wa_otp" ||
+          ticket.purpose !== "change-phone" ||
+          ticket.coreId !== user.coreId ||
+          normalizePhone(ticket.phone) !== normalizedNewPhone
+        ) {
+          return res.status(400).json({
+            error: "Invalid verification proof. Please verify the new number.",
+          });
+        }
+      } catch {
+        return res.status(400).json({
+          error: "Verification proof expired. Please request a new OTP.",
+        });
+      }
+    }
+
     // 2. Update data user
     await user.update({
       firstName: firstName !== undefined ? firstName : user.firstName,
       lastName: lastName !== undefined ? lastName : user.lastName,
       email: email !== undefined ? email : user.email,
-      phoneNumber: phoneNumber !== undefined ? phoneNumber : user.phoneNumber,
+      phoneNumber: phoneChanged ? normalizedNewPhone : user.phoneNumber,
       avatarUrl: avatarUrl !== undefined ? avatarUrl : user.avatarUrl,
     });
 

@@ -16,3 +16,5 @@ yarn-debug.log*
 pnpm-debug.log*
 
 .vercel
+env_pairs.tsv
+.expo/

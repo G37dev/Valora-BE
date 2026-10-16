@@ -13,8 +13,19 @@ const RESEND_COOLDOWN_MS = 60 * 1000; // minimal 60 detik antar kirim
 const MAX_ATTEMPTS = 5;
 const MAX_SEND_PER_HOUR = 6;
 
-const PURPOSES = new Set(["register", "login", "transaction", "verify-phone"]);
-const PURPOSES_WITH_AUTH = new Set(["login", "transaction", "verify-phone"]);
+const PURPOSES = new Set([
+  "register",
+  "login",
+  "transaction",
+  "verify-phone",
+  "change-phone",
+]);
+const PURPOSES_WITH_AUTH = new Set([
+  "login",
+  "transaction",
+  "verify-phone",
+  "change-phone",
+]);
 
 function decodeAuthToken(req) {
   const authHeader = req.headers.authorization;
@@ -34,6 +45,7 @@ const hashCode = (code) =>
  *  - register   : phone dari body (user belum punya akun)
  *  - login      : phone dari user via pre_auth token
  *  - transaction/verify-phone : phone dari user via JWT penuh
+ *  - change-phone : nomor BARU dari body, tetap butuh JWT penuh
  */
 async function resolveTarget(req, purpose) {
   if (purpose === "register") {
@@ -42,16 +54,39 @@ async function resolveTarget(req, purpose) {
   }
 
   const decoded = decodeAuthToken(req);
-  if (!decoded?.coreId) return { error: "Token tidak valid", status: 401 };
+  if (!decoded?.coreId) return { error: "Invalid token.", status: 401 };
   if (purpose === "login" && decoded.scope !== "pre_auth") {
-    return { error: "Token tidak valid", status: 401 };
+    return { error: "Invalid token.", status: 401 };
+  }
+  if (purpose !== "login" && decoded.scope === "pre_auth") {
+    return { error: "Invalid token.", status: 401 };
   }
 
   const user = await User.findOne({ where: { coreId: decoded.coreId } });
+  if (!user) {
+    return { error: "User not found.", status: 404 };
+  }
+
+  // change-phone: nomor baru dari body — pastikan belum dipakai akun lain
+  if (purpose === "change-phone") {
+    const phone = normalizePhone(req.body.phone);
+    if (!phone) {
+      return { error: "Invalid phone number.", status: 400 };
+    }
+    const existing = await User.findOne({ where: { phoneNumber: phone } });
+    if (existing && existing.coreId !== decoded.coreId) {
+      return {
+        error: "This phone number is already registered.",
+        status: 409,
+      };
+    }
+    return { phone, coreId: decoded.coreId, tenantId: decoded.tenantId };
+  }
+
   const phone = normalizePhone(user?.phoneNumber);
-  if (!user || !phone) {
+  if (!phone) {
     return {
-      error: "Nomor WhatsApp belum terdaftar di akun ini.",
+      error: "No WhatsApp number registered on this account.",
       status: 400,
     };
   }
@@ -65,7 +100,7 @@ exports.sendOtp = async (req, res) => {
   try {
     const purpose = String(req.body.purpose || "");
     if (!PURPOSES.has(purpose)) {
-      return res.status(400).json({ error: "Purpose OTP tidak valid." });
+      return res.status(400).json({ error: "Invalid OTP purpose." });
     }
 
     const target = await resolveTarget(req, purpose);
@@ -88,7 +123,7 @@ exports.sendOtp = async (req, res) => {
           1000,
       );
       return res.status(429).json({
-        error: `Tunggu ${retryAfter} detik sebelum kirim ulang.`,
+        error: `Please wait ${retryAfter} seconds before resending.`,
         retryAfter,
       });
     }
@@ -104,7 +139,7 @@ exports.sendOtp = async (req, res) => {
     if (sentLastHour >= MAX_SEND_PER_HOUR) {
       return res
         .status(429)
-        .json({ error: "Batas kirim OTP tercapai. Coba lagi nanti." });
+        .json({ error: "OTP send limit reached. Please try again later." });
     }
 
     // Nonaktifkan token lama yang belum dipakai
@@ -133,7 +168,7 @@ exports.sendOtp = async (req, res) => {
     });
   } catch (error) {
     console.error("WA OTP send error:", error);
-    res.status(500).json({ error: "Gagal mengirim kode OTP." });
+    res.status(500).json({ error: "Failed to send OTP code." });
   }
 };
 
@@ -145,10 +180,10 @@ exports.verifyOtp = async (req, res) => {
     const purpose = String(req.body.purpose || "");
     const code = String(req.body.code || "").trim();
     if (!PURPOSES.has(purpose)) {
-      return res.status(400).json({ error: "Purpose OTP tidak valid." });
+      return res.status(400).json({ error: "Invalid OTP purpose." });
     }
     if (!/^\d{6}$/.test(code)) {
-      return res.status(400).json({ error: "Kode OTP harus 6 digit." });
+      return res.status(400).json({ error: "OTP code must be 6 digits." });
     }
 
     const target = await resolveTarget(req, purpose);
@@ -163,21 +198,19 @@ exports.verifyOtp = async (req, res) => {
     });
 
     if (!record || Date.now() > record.expiresAt.getTime()) {
-      return res
-        .status(400)
-        .json({ error: "Kode tidak ditemukan atau kadaluarsa." });
+      return res.status(400).json({ error: "Code not found or expired." });
     }
     if (record.attempts >= MAX_ATTEMPTS) {
       return res
         .status(429)
-        .json({ error: "Percobaan habis. Minta kode baru." });
+        .json({ error: "No attempts left. Request a new code." });
     }
 
     if (record.codeHash !== hashCode(code)) {
       await record.increment("attempts");
       const left = MAX_ATTEMPTS - record.attempts;
       return res.status(401).json({
-        error: `Kode salah.${left > 0 ? ` Sisa ${left} percobaan.` : ""}`,
+        error: `Incorrect code.${left > 0 ? ` ${left} attempt(s) left.` : ""}`,
       });
     }
 
@@ -190,7 +223,7 @@ exports.verifyOtp = async (req, res) => {
         tenantId,
       );
       return res.json({
-        message: "Login berhasil via WhatsApp OTP.",
+        message: "Login successful via WhatsApp OTP.",
         ...authData,
       });
     }
@@ -208,6 +241,6 @@ exports.verifyOtp = async (req, res) => {
     res.json({ ok: true, otpTicket });
   } catch (error) {
     console.error("WA OTP verify error:", error);
-    res.status(500).json({ error: "Gagal memverifikasi kode OTP." });
+    res.status(500).json({ error: "Failed to verify OTP code." });
   }
 };

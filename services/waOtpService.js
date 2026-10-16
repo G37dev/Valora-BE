@@ -35,8 +35,8 @@ function normalizePhone(raw) {
 }
 
 const buildMessage = (code) =>
-  `*${code}* adalah kode verifikasi Valora Anda.\n\n` +
-  `Kode berlaku 5 menit. Jangan bagikan ke siapa pun, termasuk pihak yang mengaku dari Valora.`;
+  `*${code}* is your Valora verification code.\n\n` +
+  `This code expires in 5 minutes. Never share it with anyone, including anyone claiming to be from Valora.`;
 
 async function sendViaFonnte(phone, code) {
   const res = await fetch("https://api.fonnte.com/send", {
@@ -73,7 +73,7 @@ async function sendViaMeta(phone, code) {
         type: "template",
         template: {
           name: WA_TEMPLATE_NAME,
-          language: { code: "id" },
+          language: { code: "en" },
           components: [
             {
               type: "body",
@@ -86,9 +86,7 @@ async function sendViaMeta(phone, code) {
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(
-      `Meta WA gagal: ${data.error?.message || res.status}`,
-    );
+    throw new Error(`Meta WA gagal: ${data.error?.message || res.status}`);
   }
   return { delivered: true };
 }
