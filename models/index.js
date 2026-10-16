@@ -32,6 +32,9 @@ const UserPushToken = require("./UserPushToken");
 // Business Clock (time simulation)
 const BusinessClock = require("./BusinessClock");
 
+// WhatsApp OTP
+const WaOtpToken = require("./WaOtpToken");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -383,4 +386,7 @@ module.exports = {
 
   // Business Clock
   BusinessClock,
+
+  // WhatsApp OTP
+  WaOtpToken,
 };

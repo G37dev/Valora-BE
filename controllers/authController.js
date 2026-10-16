@@ -697,3 +697,5 @@ exports.disableAuthenticator = async (req, res) => {
     res.status(500).json({ error: "Gagal menonaktifkan authenticator." });
   }
 };
+
+exports.generateAuthResponse = generateAuthResponse;

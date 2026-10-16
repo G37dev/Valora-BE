@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/authController");
 const passkeyController = require("../controllers/passkeyController");
+const otpController = require("../controllers/otpController");
 const rateLimit = require("../middleware/rateLimit");
 
 // ==========================================
@@ -57,5 +58,11 @@ router.post("/passkey/auth-verify", otpLimiter, passkeyController.verifyAuth);
 // Manajemen passkey (butuh JWT login penuh)
 router.get("/passkey/list", passkeyController.listPasskeys);
 router.delete("/passkey/:id", passkeyController.deletePasskey);
+
+// ==========================================
+// 4. ROUTE WHATSAPP OTP
+// ==========================================
+router.post("/otp/send", otpLimiter, otpController.sendOtp);
+router.post("/otp/verify", otpLimiter, otpController.verifyOtp);
 
 module.exports = router;
