@@ -35,6 +35,23 @@ const BusinessClock = require("./BusinessClock");
 // WhatsApp OTP
 const WaOtpToken = require("./WaOtpToken");
 
+// Loan V1
+const LoanPosition = require("./LoanPosition");
+const LoanDrawdown = require("./LoanDrawdown");
+const LoanInterestEvent = require("./LoanInterestEvent");
+const LoanRepayment = require("./LoanRepayment");
+const LoanCollateralRelease = require("./LoanCollateralRelease");
+const LoanRiskSnapshot = require("./LoanRiskSnapshot");
+const LoanLiquidation = require("./LoanLiquidation");
+const LoanTreasuryLot = require("./LoanTreasuryLot");
+const LoanPool = require("./LoanPool");
+const LoanBorrowerCycle = require("./LoanBorrowerCycle");
+const LoanPoolSnapshot = require("./LoanPoolSnapshot");
+const LoanPgAllocation = require("./LoanPgAllocation");
+const LoanEvent = require("./LoanEvent");
+const LoanRiskPolicyVersion = require("./LoanRiskPolicyVersion");
+const LoanPriceTick = require("./LoanPriceTick");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -320,6 +337,44 @@ InstallmentEvent.belongsTo(InstallmentPlan, {
 });
 
 // ==========================================
+// Loan V1
+// ==========================================
+
+Customer.hasMany(LoanPosition, {
+  foreignKey: "coreId",
+  sourceKey: "coreId",
+  as: "loanPositions",
+});
+LoanPosition.belongsTo(Customer, {
+  foreignKey: "coreId",
+  targetKey: "coreId",
+  as: "customer",
+});
+
+for (const [Model, alias] of [
+  [LoanDrawdown, "drawdowns"],
+  [LoanInterestEvent, "interestEvents"],
+  [LoanRepayment, "repayments"],
+  [LoanCollateralRelease, "releases"],
+  [LoanRiskSnapshot, "riskSnapshots"],
+  [LoanLiquidation, "liquidations"],
+  [LoanPgAllocation, "pgAllocations"],
+  [LoanEvent, "events"],
+]) {
+  LoanPosition.hasMany(Model, { foreignKey: "positionId", as: alias });
+  Model.belongsTo(LoanPosition, { foreignKey: "positionId", as: "position" });
+}
+
+LoanLiquidation.hasMany(LoanTreasuryLot, {
+  foreignKey: "liquidationId",
+  as: "lots",
+});
+LoanTreasuryLot.belongsTo(LoanLiquidation, {
+  foreignKey: "liquidationId",
+  as: "liquidation",
+});
+
+// ==========================================
 // User & Push Tokens
 // ==========================================
 
@@ -389,4 +444,21 @@ module.exports = {
 
   // WhatsApp OTP
   WaOtpToken,
+
+  // Loan V1
+  LoanPosition,
+  LoanDrawdown,
+  LoanInterestEvent,
+  LoanRepayment,
+  LoanCollateralRelease,
+  LoanRiskSnapshot,
+  LoanLiquidation,
+  LoanTreasuryLot,
+  LoanPool,
+  LoanBorrowerCycle,
+  LoanPoolSnapshot,
+  LoanPgAllocation,
+  LoanEvent,
+  LoanRiskPolicyVersion,
+  LoanPriceTick,
 };

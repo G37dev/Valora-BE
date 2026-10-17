@@ -7,6 +7,7 @@ const { startEarnListener } = require("./services/earnListener");
 const {
   startInstallmentScheduler,
 } = require("./services/installment/installment.scheduler");
+const { startLoanScheduler } = require("./services/loan/loan.scheduler");
 
 require("./workers/earn.worker");
 require("./workers/earn-claim.worker");
@@ -25,6 +26,7 @@ async function startWorker() {
     startBlockchainListener();
     startEarnListener();
     startInstallmentScheduler();
+    startLoanScheduler();
 
     console.log("Blockchain listener started.");
     console.log("Earn listener started.");
@@ -32,6 +34,7 @@ async function startWorker() {
     console.log("Swap worker started.");
     console.log("Price scheduler started.");
     console.log("Installment scheduler started.");
+    console.log("Loan scheduler started.");
   } catch (error) {
     console.error("Worker startup failed:", error);
     process.exit(1);
