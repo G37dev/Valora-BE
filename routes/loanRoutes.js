@@ -45,14 +45,19 @@ function expectedKey() {
 
 function adminAuth(req, res, next) {
   if (req.headers["x-clock-key"] !== expectedKey()) {
-    return res.status(403).json({ success: false, message: "x-clock-key invalid" });
+    return res
+      .status(403)
+      .json({ success: false, message: "x-clock-key invalid" });
   }
   next();
 }
 
 function testAuth(req, res, next) {
   if (!clock.ENABLED) {
-    return res.status(403).json({ success: false, message: "Simulation disabled in this environment" });
+    return res.status(403).json({
+      success: false,
+      message: "Simulation disabled in this environment",
+    });
   }
   return adminAuth(req, res, next);
 }
@@ -77,7 +82,12 @@ router.post("/admin/treasury/sale", adminAuth, c.adminTreasurySale);
 router.get("/admin/policies", adminAuth, c.adminPolicies);
 router.post("/admin/policies", adminAuth, c.adminCreatePolicy);
 router.post("/admin/policies/simulate", adminAuth, c.adminSimulatePolicy);
-router.post("/admin/positions/:position_id/liquidate", adminAuth, c.adminForceLiquidate);
+router.post(
+  "/admin/positions/:position_id/liquidate",
+  adminAuth,
+  c.adminForceLiquidate,
+);
+router.post("/admin/tick", adminAuth, c.adminRunTick);
 router.post("/admin/test/price", testAuth, c.testSetPrice);
 router.post("/admin/test/tick", testAuth, c.testRunTick);
 

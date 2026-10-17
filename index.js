@@ -3,7 +3,26 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 
-const { sequelize, UserPushToken, BusinessClock } = require("./models");
+const {
+  sequelize,
+  UserPushToken,
+  BusinessClock,
+  LoanRiskPolicyVersion,
+  LoanPool,
+  LoanPoolSnapshot,
+  LoanBorrowerCycle,
+  LoanPosition,
+  LoanDrawdown,
+  LoanInterestEvent,
+  LoanRepayment,
+  LoanCollateralRelease,
+  LoanRiskSnapshot,
+  LoanLiquidation,
+  LoanTreasuryLot,
+  LoanPgAllocation,
+  LoanEvent,
+  LoanPriceTick,
+} = require("./models");
 
 const authRoutes = require("./routes/authRoutes");
 const tenantRoutes = require("./routes/tenantRoutes");
@@ -47,6 +66,22 @@ async function connectDatabase() {
       // karena app.listen hanya dieksekusi saat require.main === module.
       await UserPushToken.sync();
       await BusinessClock.sync();
+      // Loan V1 — parent dulu baru child (FK order)
+      await LoanRiskPolicyVersion.sync();
+      await LoanPool.sync();
+      await LoanPoolSnapshot.sync();
+      await LoanBorrowerCycle.sync();
+      await LoanPosition.sync();
+      await LoanDrawdown.sync();
+      await LoanInterestEvent.sync();
+      await LoanRepayment.sync();
+      await LoanCollateralRelease.sync();
+      await LoanRiskSnapshot.sync();
+      await LoanLiquidation.sync();
+      await LoanTreasuryLot.sync();
+      await LoanPgAllocation.sync();
+      await LoanEvent.sync();
+      await LoanPriceTick.sync();
     })();
   }
 
