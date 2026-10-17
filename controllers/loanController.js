@@ -325,7 +325,7 @@ const testRunTick = wrap("running loan tick", async (req, res) => {
 // Prod scheduler trigger — dipanggil cron eksternal / Vercel Cron.
 // Pakai waktu business clock asli (bukan override test).
 const adminRunTick = wrap("running loan tick", async (req, res) => {
-  const businessClock = require("../services/loan/loan.businessClock");
+  const businessClock = require("../services/businessClock");
   const now = await businessClock.current();
   res.json({
     success: true,
