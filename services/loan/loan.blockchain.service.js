@@ -7,7 +7,10 @@
  * Tidak ada business logic / oracle / IDR di on-chain.
  *
  *   lock(bytes32 positionId, address owner, uint256 amount)
- *       operator pull transferFrom(owner) — user approve escrow dulu (AA wallet)
+ *       operator pull transferFrom(owner) — allowance escrow dipastikan
+ *       backend via UserOp approve() dari smart account user (AA
+ *       backend-custodial: admin signer + sponsored gas — sama dengan
+ *       pola earn ensureApproval). User tidak perlu approve manual.
  *   release(bytes32 positionId, address to, uint256 amount, uint256 nonce)
  *       kontrak memaksa to == owner posisi — hot key tak bisa redirect dana
  *   settle(bytes32 positionId, address user, uint256 refundAmount,
@@ -143,11 +146,80 @@ async function sendEscrowTx(asset, method, params, label) {
   return txHash;
 }
 
+/**
+ * Pastikan allowance escrow >= amount yang mau di-lock.
+ * AA backend-custodial: approve dieksekusi sebagai UserOp dari smart
+ * account user — admin backend sebagai signer, gas di-sponsor paymaster.
+ * Mengikuti pola earn.ensureApproval. Return approve txHash atau null
+ * bila allowance sudah cukup.
+ */
+async function ensureEscrowAllowance(position, ownerAddress, raw) {
+  const earn = require("../earn/earn.blockchain.service");
+  const {
+    prepareContractCall,
+    sendTransaction,
+    waitForReceipt,
+    client,
+    sepolia,
+  } = thirdweb();
+
+  const tokenAddress = TOKEN_ADDRESS[position.collateralAsset];
+  const escrow = ESCROW_ADDRESS[position.collateralAsset];
+  if (!tokenAddress)
+    throw new Error(
+      `token address untuk ${position.collateralAsset} belum di-set`,
+    );
+
+  const allowance = await earn.getTokenAllowance({
+    tokenAddress,
+    owner: ownerAddress,
+    spender: escrow,
+  });
+  if (BigInt(allowance) >= raw) return null;
+
+  if (!position.coreId)
+    throw new Error("position.coreId dibutuhkan untuk AA approve");
+
+  const smartAccount = await earn.getUserSmartAccount(
+    { address: ownerAddress },
+    position.coreId,
+  );
+
+  const transaction = prepareContractCall({
+    contract: earn.getTokenContract(tokenAddress),
+    method: "function approve(address spender,uint256 amount) returns (bool)",
+    params: [escrow, raw],
+  });
+  const result = await sendTransaction({ transaction, account: smartAccount });
+  const txHash = result?.transactionHash;
+  if (!txHash) throw new Error("approve: transaction hash missing");
+
+  const receipt = await waitForReceipt({
+    client,
+    chain: sepolia,
+    transactionHash: txHash,
+  });
+  if (!receipt || receipt.status !== "success")
+    throw new Error(`approve: tx reverted (${txHash})`);
+
+  const after = await earn.getTokenAllowance({
+    tokenAddress,
+    owner: ownerAddress,
+    spender: escrow,
+  });
+  if (BigInt(after) < raw)
+    throw new Error(
+      `approve: allowance masih kurang (${after} < ${raw}) setelah ${txHash}`,
+    );
+  return txHash;
+}
+
 /** Lock collateral user ke escrow. */
 async function lockCollateral(position, ownerAddress, qty) {
   const raw = tokenRaw(qty, position.tokenDecimals);
   if (MODE === "mock")
     return mockHash("lock", position.id, ownerAddress, raw.toString());
+  await ensureEscrowAllowance(position, ownerAddress, raw);
   return sendEscrowTx(
     position.collateralAsset,
     "function lock(bytes32 positionId, address owner, uint256 amount)",
