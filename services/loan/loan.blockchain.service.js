@@ -9,9 +9,13 @@
  *   lock(bytes32 positionId, address owner, uint256 amount)
  *       operator pull transferFrom(owner) — user approve escrow dulu (AA wallet)
  *   release(bytes32 positionId, address to, uint256 amount, uint256 nonce)
+ *       kontrak memaksa to == owner posisi — hot key tak bisa redirect dana
  *   settle(bytes32 positionId, address user, uint256 refundAmount,
  *          address treasury, uint256 treasuryAmount, uint256 nonce,
  *          uint256 expiresAt, bytes signature)      -- atomic split
+ *       signature = EIP-191 settlementSigner atas digest
+ *       keccak256(abi.encode(chainId, contract, positionId, user, refund,
+ *                            treasury, treasuryAmount, nonce, expiresAt))
  *   getPosition(bytes32) view returns (address owner, uint256 locked, uint8 status)
  *
  * Mode:
@@ -40,7 +44,8 @@ const TOKEN_ADDRESS = {
   [ASSET.GOLD]: process.env.GOLD_DUMMY_CONTRACT_ADDRESS,
 };
 const TREASURY_WALLET =
-  process.env.LOAN_TREASURY_WALLET_ADDRESS || "0x000000000000000000000000000000000000dEaD";
+  process.env.LOAN_TREASURY_WALLET_ADDRESS ||
+  "0x000000000000000000000000000000000000dEaD";
 
 const MODE =
   String(process.env.LOAN_CHAIN_MODE || "").toLowerCase() === "live" &&
@@ -55,11 +60,33 @@ const CHAIN_ID = Number(process.env.LOAN_CHAIN_ID || 11155111);
 let tw = null;
 function thirdweb() {
   if (tw) return tw;
-  const { keccak256, stringToHex } = require("thirdweb/utils");
-  const { getContract, readContract, prepareContractCall, sendTransaction, waitForReceipt } = require("thirdweb");
+  const {
+    keccak256,
+    stringToHex,
+    encodeAbiParameters,
+  } = require("thirdweb/utils");
+  const {
+    getContract,
+    readContract,
+    prepareContractCall,
+    sendTransaction,
+    waitForReceipt,
+  } = require("thirdweb");
   const { sepolia } = require("../../utils/chain");
   const { client, adminAccount } = require("../earn/earn.blockchain.service");
-  tw = { keccak256, stringToHex, getContract, readContract, prepareContractCall, sendTransaction, waitForReceipt, sepolia, client, adminAccount };
+  tw = {
+    keccak256,
+    stringToHex,
+    encodeAbiParameters,
+    getContract,
+    readContract,
+    prepareContractCall,
+    sendTransaction,
+    waitForReceipt,
+    sepolia,
+    client,
+    adminAccount,
+  };
   return tw;
 }
 
@@ -82,24 +109,45 @@ async function getBeneficiaryAddress(coreId) {
 
 function escrowContract(asset) {
   const { getContract, sepolia, client } = thirdweb();
-  return getContract({ client, chain: sepolia, address: ESCROW_ADDRESS[asset] });
+  return getContract({
+    client,
+    chain: sepolia,
+    address: ESCROW_ADDRESS[asset],
+  });
 }
 
 async function sendEscrowTx(asset, method, params, label) {
-  const { prepareContractCall, sendTransaction, waitForReceipt, adminAccount, client, sepolia } = thirdweb();
-  const transaction = prepareContractCall({ contract: escrowContract(asset), method, params });
+  const {
+    prepareContractCall,
+    sendTransaction,
+    waitForReceipt,
+    adminAccount,
+    client,
+    sepolia,
+  } = thirdweb();
+  const transaction = prepareContractCall({
+    contract: escrowContract(asset),
+    method,
+    params,
+  });
   const result = await sendTransaction({ transaction, account: adminAccount });
   const txHash = result?.transactionHash;
   if (!txHash) throw new Error(`${label}: transaction hash missing`);
-  const receipt = await waitForReceipt({ client, chain: sepolia, transactionHash: txHash });
-  if (!receipt || receipt.status !== "success") throw new Error(`${label}: tx reverted (${txHash})`);
+  const receipt = await waitForReceipt({
+    client,
+    chain: sepolia,
+    transactionHash: txHash,
+  });
+  if (!receipt || receipt.status !== "success")
+    throw new Error(`${label}: tx reverted (${txHash})`);
   return txHash;
 }
 
 /** Lock collateral user ke escrow. */
 async function lockCollateral(position, ownerAddress, qty) {
   const raw = tokenRaw(qty, position.tokenDecimals);
-  if (MODE === "mock") return mockHash("lock", position.id, ownerAddress, raw.toString());
+  if (MODE === "mock")
+    return mockHash("lock", position.id, ownerAddress, raw.toString());
   return sendEscrowTx(
     position.collateralAsset,
     "function lock(bytes32 positionId, address owner, uint256 amount)",
@@ -112,7 +160,8 @@ async function lockCollateral(position, ownerAddress, qty) {
 async function releaseCollateral(position, recipient, qty, nonce) {
   const raw = tokenRaw(qty, position.tokenDecimals);
   if (raw <= 0n) throw new Error("release amount rounds to zero raw units");
-  if (MODE === "mock") return mockHash("release", position.id, recipient, raw.toString(), nonce);
+  if (MODE === "mock")
+    return mockHash("release", position.id, recipient, raw.toString(), nonce);
   return sendEscrowTx(
     position.collateralAsset,
     "function release(bytes32 positionId, address to, uint256 amount, uint256 nonce)",
@@ -126,16 +175,27 @@ async function releaseCollateral(position, recipient, qty, nonce) {
  * kanonik; kontrak memverifikasi signer/roles, qty, recipient, nonce, expiry.
  * Mock: HMAC-SHA256 (JWT_SECRET) agar deterministik & bisa diverifikasi di QA.
  */
-function buildSettlementInstruction(position, liq, { now, expiresInSeconds = 900, policyVersion }) {
+function buildSettlementInstruction(
+  position,
+  liq,
+  { now, expiresInSeconds = 900, policyVersion },
+) {
   return {
     position_id: position.id,
     settlement_id: liq.id,
     chain_id: CHAIN_ID,
     contract_address: ESCROW_ADDRESS[position.collateralAsset] || "mock",
-    collateral_token: TOKEN_ADDRESS[position.collateralAsset] || position.collateralAsset,
+    collateral_token:
+      TOKEN_ADDRESS[position.collateralAsset] || position.collateralAsset,
     locked_qty_raw: tokenRaw(liq.lockedQty, position.tokenDecimals).toString(),
-    debt_alloc_qty_raw: tokenRaw(liq.debtAllocQty, position.tokenDecimals).toString(),
-    compensation_qty_raw: tokenRaw(liq.compensationQty, position.tokenDecimals).toString(),
+    debt_alloc_qty_raw: tokenRaw(
+      liq.debtAllocQty,
+      position.tokenDecimals,
+    ).toString(),
+    compensation_qty_raw: tokenRaw(
+      liq.compensationQty,
+      position.tokenDecimals,
+    ).toString(),
     refund_qty_raw: tokenRaw(liq.refundQty, position.tokenDecimals).toString(),
     user_recipient: liq.userRecipient,
     treasury_recipient: liq.treasuryRecipient,
@@ -143,20 +203,67 @@ function buildSettlementInstruction(position, liq, { now, expiresInSeconds = 900
     validated_price_idr: new Decimal(liq.referencePriceIdr).toFixed(0),
     haircut_bps: liq.haircutBps,
     price_source: liq.priceSource,
-    price_timestamp: liq.priceObservedAt ? new Date(liq.priceObservedAt).toISOString() : null,
+    price_timestamp: liq.priceObservedAt
+      ? new Date(liq.priceObservedAt).toISOString()
+      : null,
     risk_state: position.status,
     config_version: policyVersion || null,
-    authorized_signer: MODE === "live" ? thirdweb().adminAccount.address : "mock-operator",
+    authorized_signer:
+      MODE === "live" ? thirdweb().adminAccount.address : "mock-operator",
     nonce: liq.nonce,
     expires_at: new Date(now.getTime() + expiresInSeconds * 1000).toISOString(),
   };
 }
 
+/**
+ * Digest yang diverifikasi kontrak di settle() — HARUS persis urutan
+ * abi.encode on-chain:
+ * (chainId, contractAddress, positionId, user, refundAmount, treasury,
+ *  treasuryAmount, nonce, expiresAt)
+ */
+function settlementDigest(instruction) {
+  const { keccak256, encodeAbiParameters } = thirdweb();
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: "uint256" }, // chainid
+        { type: "address" }, // escrow
+        { type: "bytes32" }, // positionId
+        { type: "address" }, // user
+        { type: "uint256" }, // refundAmount
+        { type: "address" }, // treasury
+        { type: "uint256" }, // treasuryAmount
+        { type: "uint256" }, // nonce
+        { type: "uint256" }, // expiresAt
+      ],
+      [
+        BigInt(instruction.chain_id),
+        instruction.contract_address,
+        positionIdBytes32(instruction.position_id),
+        instruction.user_recipient,
+        BigInt(instruction.refund_qty_raw),
+        instruction.treasury_recipient,
+        BigInt(instruction.debt_alloc_qty_raw) +
+          BigInt(instruction.compensation_qty_raw),
+        BigInt(instruction.nonce),
+        BigInt(Math.floor(new Date(instruction.expires_at).getTime() / 1000)),
+      ],
+    ),
+  );
+}
+
 async function signInstruction(instruction) {
-  const canonical = JSON.stringify(instruction, Object.keys(instruction).sort());
+  const canonical = JSON.stringify(
+    instruction,
+    Object.keys(instruction).sort(),
+  );
   if (MODE === "live") {
     const { adminAccount } = thirdweb();
-    return adminAccount.signMessage({ message: canonical });
+    // EIP-191 atas digest kanonik — dicocokkan kontrak via
+    // toEthSignedMessageHash(digest).recover(sig) == settlementSigner
+    return adminAccount.signMessage({
+      message: { raw: settlementDigest(instruction) },
+    });
   }
   return crypto
     .createHmac("sha256", process.env.JWT_SECRET || "loan-mock")
@@ -167,7 +274,13 @@ async function signInstruction(instruction) {
 /** Atomic split: refund -> user, debt+comp -> treasury. */
 async function settleLiquidation(position, liq, instruction, signature) {
   if (MODE === "mock") {
-    return mockHash("settle", position.id, liq.id, instruction.nonce, signature.slice(0, 16));
+    return mockHash(
+      "settle",
+      position.id,
+      liq.id,
+      instruction.nonce,
+      signature.slice(0, 16),
+    );
   }
   return sendEscrowTx(
     position.collateralAsset,
@@ -177,7 +290,8 @@ async function settleLiquidation(position, liq, instruction, signature) {
       instruction.user_recipient,
       BigInt(instruction.refund_qty_raw),
       instruction.treasury_recipient,
-      (BigInt(instruction.debt_alloc_qty_raw) + BigInt(instruction.compensation_qty_raw)),
+      BigInt(instruction.debt_alloc_qty_raw) +
+        BigInt(instruction.compensation_qty_raw),
       BigInt(instruction.nonce),
       BigInt(Math.floor(new Date(instruction.expires_at).getTime() / 1000)),
       signature,
@@ -188,12 +302,18 @@ async function settleLiquidation(position, liq, instruction, signature) {
 
 async function readOnchainPosition(position) {
   if (MODE === "mock") {
-    return { owner: position.ownerAddress, locked: tokenRaw(position.lockedQty, position.tokenDecimals), status: 1, mock: true };
+    return {
+      owner: position.ownerAddress,
+      locked: tokenRaw(position.lockedQty, position.tokenDecimals),
+      status: 1,
+      mock: true,
+    };
   }
   const { readContract } = thirdweb();
   const [owner, locked, status] = await readContract({
     contract: escrowContract(position.collateralAsset),
-    method: "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
+    method:
+      "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
     params: [positionIdBytes32(position.id)],
   });
   return { owner, locked, status: Number(status) };
