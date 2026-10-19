@@ -178,7 +178,8 @@ function mapStatusToLocal({ reviewStatus, reviewAnswer }) {
     if (reviewAnswer === "RED") return "REJECTED";
   }
   switch (reviewStatus) {
-    case "init":
+    // 'init' = applicant dibuat tapi belum submit — jangan dianggap
+    // PENDING, biar user bisa mulai flow lagi (status tetap lokal).
     case "pending":
     case "queued":
     case "onHold":
