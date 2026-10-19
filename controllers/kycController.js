@@ -14,6 +14,42 @@ exports.getKyc = async (req, res) => {
       where: { core_id: coreId },
     });
 
+    if (!kyc && sumsubService.isConfigured()) {
+      /*
+       * Self-heal tanpa webhook: belum ada record tapi user mungkin
+       * sudah punya applicant Sumsub (mis. selesai SDK flow sebelum
+       * webhook ke-set). Ambil status-nya; kalau sudah lewat 'init'
+       * (beneran submit) → buat record.
+       */
+      try {
+        const applicant = await sumsubService.getApplicantByExternalId(coreId);
+        if (applicant?.id) {
+          const st = await sumsubService.getApplicantStatus(applicant.id);
+          const newStatus = sumsubService.mapStatusToLocal({
+            reviewStatus: st?.reviewStatus,
+            reviewAnswer: st?.reviewResult?.reviewAnswer,
+          });
+          if (newStatus && st?.reviewStatus !== "init") {
+            kyc = await KycProfile.create({
+              core_id: coreId,
+              status: newStatus,
+              provider_id: "sumsub",
+              provider_reference: applicant.id,
+              verification_source: "sumsub",
+              verified_at: newStatus === "VERIFIED" ? new Date() : null,
+              metadata: {
+                lastDecision:
+                  st?.reviewResult?.reviewAnswer || st?.reviewStatus,
+                syncedAt: new Date().toISOString(),
+              },
+            });
+          }
+        }
+      } catch (lookupErr) {
+        console.warn("[Sumsub] Lookup applicant gagal:", lookupErr.message);
+      }
+    }
+
     if (!kyc) {
       return res.status(404).json({
         success: false,

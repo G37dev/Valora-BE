@@ -106,6 +106,24 @@ async function refreshAccessToken({ coreId, ttlInSecs = 1200 }) {
 }
 
 /*
+ * Ambil applicant by externalUserId (coreId).
+ * GET /resources/applicants/-;externalUserId=X/one
+ * Return null kalau belum ada applicant.
+ */
+async function getApplicantByExternalId(coreId) {
+  if (!isConfigured()) return null;
+  try {
+    return await signedRequest(
+      "GET",
+      `/resources/applicants/-;externalUserId=${encodeURIComponent(coreId)}/one`,
+    );
+  } catch (err) {
+    if (err?.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+/*
  * Ambil status review applicant.
  * GET /resources/applicants/{applicantId}/status
  * → { reviewStatus, reviewResult: { reviewAnswer } }
@@ -176,6 +194,7 @@ module.exports = {
   isConfigured,
   createAccessToken,
   refreshAccessToken,
+  getApplicantByExternalId,
   getApplicantStatus,
   mapStatusToLocal,
   verifyWebhookSignature,
