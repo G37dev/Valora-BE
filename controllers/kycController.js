@@ -126,11 +126,53 @@ exports.getKyc = async (req, res) => {
     }
 
     /*
+     * Self-heal #2: record ada tapi provider lain (didit/veriff) atau
+     * status stale — cek applicant Sumsub by externalUserId. Kalau
+     * applicant sudah lewat 'init', pindahkan provider + update status.
+     */
+    if (
+      kyc &&
+      kyc.status !== "VERIFIED" &&
+      kyc.provider_id !== "sumsub" &&
+      sumsubService.isConfigured()
+    ) {
+      try {
+        const applicant = await sumsubService.getApplicantByExternalId(coreId);
+        if (applicant?.id) {
+          const st = await sumsubService.getApplicantStatus(applicant.id);
+          const newStatus = sumsubService.mapStatusToLocal({
+            reviewStatus: st?.reviewStatus,
+            reviewAnswer: st?.reviewResult?.reviewAnswer,
+          });
+          if (newStatus && st?.reviewStatus !== "init") {
+            await kyc.update({
+              status: newStatus,
+              provider_id: "sumsub",
+              provider_reference: applicant.id,
+              verification_source: "sumsub",
+              verified_at:
+                newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+              metadata: {
+                ...(kyc.metadata || {}),
+                lastDecision:
+                  st?.reviewResult?.reviewAnswer || st?.reviewStatus,
+                syncedAt: new Date().toISOString(),
+              },
+            });
+            kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+          }
+        }
+      } catch (lookupErr) {
+        console.warn("[Sumsub] Lookup applicant gagal:", lookupErr.message);
+      }
+    }
+
+    /*
      * Auto-sync Sumsub — GET /resources/applicants/{id}/status,
      * provider_reference menyimpan applicantId.
      */
     if (
-      kyc.status === "PENDING" &&
+      kyc.status !== "VERIFIED" &&
       kyc.provider_id === "sumsub" &&
       kyc.provider_reference &&
       sumsubService.isConfigured()
@@ -143,7 +185,7 @@ exports.getKyc = async (req, res) => {
           reviewStatus: st?.reviewStatus,
           reviewAnswer: st?.reviewResult?.reviewAnswer,
         });
-        if (newStatus && newStatus !== "PENDING") {
+        if (newStatus && newStatus !== kyc.status) {
           await kyc.update({
             status: newStatus,
             verified_at:
