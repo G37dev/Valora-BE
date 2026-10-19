@@ -21,4 +21,17 @@ router.post("/didit/session", verifyToken, kycController.createDiditSession);
 // Didit — webhook status update (public, diverifikasi via X-Signature HMAC)
 router.post("/didit/webhook", kycController.diditWebhook);
 
+// Sumsub — buat applicant + accessToken (butuh login)
+router.post("/sumsub/session", verifyToken, kycController.createSumsubSession);
+
+// Sumsub — refresh accessToken untuk SDK expiration handler
+router.post(
+  "/sumsub/token/refresh",
+  verifyToken,
+  kycController.refreshSumsubToken,
+);
+
+// Sumsub — webhook status update (public, diverifikasi via X-Payload-Digest)
+router.post("/sumsub/webhook", kycController.sumsubWebhook);
+
 module.exports = router;

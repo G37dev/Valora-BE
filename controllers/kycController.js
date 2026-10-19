@@ -1,6 +1,7 @@
 const { KycProfile, User } = require("../models");
 const veriffService = require("../services/veriffService");
 const diditService = require("../services/diditService");
+const sumsubService = require("../services/sumsubService");
 
 // @desc    Get data KYC berdasarkan coreId
 // @route   GET /api/kyc/:coreId
@@ -85,6 +86,42 @@ exports.getKyc = async (req, res) => {
         }
       } catch (syncErr) {
         console.warn("[Didit] Sync decision gagal:", syncErr.message);
+      }
+    }
+
+    /*
+     * Auto-sync Sumsub — GET /resources/applicants/{id}/status,
+     * provider_reference menyimpan applicantId.
+     */
+    if (
+      kyc.status === "PENDING" &&
+      kyc.provider_id === "sumsub" &&
+      kyc.provider_reference &&
+      sumsubService.isConfigured()
+    ) {
+      try {
+        const st = await sumsubService.getApplicantStatus(
+          kyc.provider_reference,
+        );
+        const newStatus = sumsubService.mapStatusToLocal({
+          reviewStatus: st?.reviewStatus,
+          reviewAnswer: st?.reviewResult?.reviewAnswer,
+        });
+        if (newStatus && newStatus !== "PENDING") {
+          await kyc.update({
+            status: newStatus,
+            verified_at:
+              newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+            metadata: {
+              ...(kyc.metadata || {}),
+              lastDecision: st?.reviewResult?.reviewAnswer || st?.reviewStatus,
+              syncedAt: new Date().toISOString(),
+            },
+          });
+          kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+        }
+      } catch (syncErr) {
+        console.warn("[Sumsub] Sync status gagal:", syncErr.message);
       }
     }
 
@@ -474,6 +511,196 @@ exports.diditWebhook = async (req, res) => {
     return res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error Didit webhook:", error);
+    return res.status(500).json({ success: false });
+  }
+};
+
+// ============================================================================
+// SUMSUB — identity verification (level-based, applicant + accessToken)
+// ============================================================================
+
+// @desc    Buat Sumsub applicant + accessToken untuk launch mobile SDK
+// @route   POST /api/kyc/sumsub/session
+exports.createSumsubSession = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+    if (!coreId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Token tidak valid." });
+    }
+
+    const user = await User.findOne({ where: { coreId } });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User tidak ditemukan." });
+    }
+
+    let kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+    if (kyc?.status === "VERIFIED") {
+      return res.status(400).json({
+        success: false,
+        message: "KYC Anda sudah terverifikasi.",
+      });
+    }
+    if (kyc?.status === "PENDING" && kyc.provider_id === "sumsub") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Verifikasi Anda sedang diproses. Tunggu hasilnya terlebih dahulu.",
+      });
+    }
+
+    const { levelName } = req.body || {};
+    const { applicant, token } = await sumsubService.createAccessToken({
+      coreId,
+      levelName,
+    });
+
+    // KycProfile sengaja TIDAK ditulis di sini — user bisa saja buka
+    // flow Sumsub lalu cancel. Record baru dibuat oleh webhook begitu
+    // user benar-benar submit / ada decision.
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        accessToken: token?.token,
+        applicantId: applicant?.id,
+        levelName: levelName || undefined,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Error create Sumsub session:",
+      error?.response?.data || error,
+    );
+    return res.status(500).json({
+      success: false,
+      message: "Gagal membuat sesi verifikasi.",
+    });
+  }
+};
+
+// @desc    Refresh Sumsub accessToken (dipanggil SDK saat token expired)
+// @route   POST /api/kyc/sumsub/token/refresh
+exports.refreshSumsubToken = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+    if (!coreId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Token tidak valid." });
+    }
+
+    const token = await sumsubService.refreshAccessToken({ coreId });
+    return res
+      .status(200)
+      .json({ success: true, data: { accessToken: token?.token } });
+  } catch (error) {
+    console.error(
+      "Error refresh Sumsub token:",
+      error?.response?.data || error,
+    );
+    return res.status(500).json({
+      success: false,
+      message: "Gagal refresh token verifikasi.",
+    });
+  }
+};
+
+// @desc    Webhook event dari Sumsub (public — diverifikasi via X-Payload-Digest)
+// @route   POST /api/kyc/sumsub/webhook
+exports.sumsubWebhook = async (req, res) => {
+  try {
+    const digest = req.headers["x-payload-digest"];
+    const alg = req.headers["x-payload-digest-alg"];
+
+    if (!sumsubService.verifyWebhookSignature(req.rawBody || "", digest, alg)) {
+      console.warn("[Sumsub] Webhook signature tidak valid — ditolak.");
+      return res
+        .status(401)
+        .json({ success: false, message: "Signature tidak valid." });
+    }
+
+    const payload = req.body || {};
+    const coreId = payload.externalUserId;
+    const applicantId = payload.applicantId;
+    const type = payload.type;
+
+    if (!coreId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "externalUserId tidak ada." });
+    }
+
+    /*
+     * Cuma proses event yang bawa status review. applicantReviewed →
+     * decision final; applicantPending → user sudah submit (buat record
+     * PENDING kalau belum ada); event lain cukup di-ack.
+     */
+    const reviewStatus =
+      payload.reviewStatus || payload.reviewResult?.reviewStatus;
+    const reviewAnswer = payload.reviewResult?.reviewAnswer;
+    const newStatus = sumsubService.mapStatusToLocal({
+      reviewStatus,
+      reviewAnswer,
+    });
+    const submitted =
+      type === "applicantPending" || type === "applicantReviewed";
+
+    let kyc = await KycProfile.findOne({ where: { core_id: coreId } });
+
+    if (!kyc) {
+      if (!submitted || !newStatus) {
+        return res.status(200).json({ success: true, ignored: type });
+      }
+
+      const user = await User.findOne({ where: { coreId } });
+      if (!user) {
+        return res
+          .status(404)
+          .json({ success: false, message: "KYC tidak ditemukan." });
+      }
+
+      kyc = await KycProfile.create({
+        core_id: coreId,
+        status: newStatus,
+        provider_id: "sumsub",
+        provider_reference: applicantId,
+        verification_source: "sumsub",
+        verified_at: newStatus === "VERIFIED" ? new Date() : null,
+        metadata: {
+          lastDecision: reviewAnswer || reviewStatus,
+          decidedAt: new Date().toISOString(),
+          webhookEventId: payload.correlationId,
+        },
+      });
+
+      console.log(`[Sumsub] KYC ${coreId} → ${newStatus} (${type}) [created]`);
+      return res.status(200).json({ success: true });
+    }
+
+    if (!newStatus) {
+      return res.status(200).json({ success: true, ignored: type });
+    }
+
+    await kyc.update({
+      status: newStatus,
+      provider_reference: applicantId || kyc.provider_reference,
+      verified_at: newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
+      metadata: {
+        ...(kyc.metadata || {}),
+        lastDecision: reviewAnswer || reviewStatus,
+        decidedAt: new Date().toISOString(),
+        webhookEventId: payload.correlationId,
+      },
+    });
+
+    console.log(`[Sumsub] KYC ${coreId} → ${newStatus} (${type})`);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Error Sumsub webhook:", error);
     return res.status(500).json({ success: false });
   }
 };
