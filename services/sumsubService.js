@@ -68,12 +68,20 @@ async function createAccessToken({ coreId, levelName, ttlInSecs = 1200 }) {
       { externalUserId: coreId },
     );
   } catch (err) {
-    // 409 = applicant dengan externalUserId ini sudah ada → pakai yang lama
-    if (err?.response?.status === 409) {
-      applicant = await signedRequest(
-        "GET",
-        `/resources/applicants/-/one?externalUserId=${encodeURIComponent(coreId)}`,
-      );
+    /*
+     * Applicant dengan externalUserId yang sama → Sumsub balas 409,
+     * di beberapa env balas 400 "Invalid parameters". Dua-duanya
+     * artinya sama: ambil applicant yang sudah ada.
+     */
+    if ([400, 409].includes(err?.response?.status)) {
+      try {
+        applicant = await signedRequest(
+          "GET",
+          `/resources/applicants/-;externalUserId=${encodeURIComponent(coreId)}/one`,
+        );
+      } catch (lookupErr) {
+        throw err;
+      }
     } else {
       throw err;
     }
