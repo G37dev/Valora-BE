@@ -118,7 +118,7 @@ exports.getUserTransactions = async (req, res) => {
       confirmations: 0,
       requiredConfirmations: 0,
       description: `Swap ${s.fromAsset} → ${s.toAsset}`,
-      createdAt: s.createdAt,
+      createdAt: s.created_at || s.createdAt,
     }));
 
     const inferInternalType = (t) => {
@@ -142,7 +142,7 @@ exports.getUserTransactions = async (req, res) => {
       confirmations: 0,
       requiredConfirmations: 0,
       description: t.description || null,
-      createdAt: t.createdAt,
+      createdAt: t.created_at || t.createdAt,
     }));
 
     const merged = [...formattedData, ...swapRows, ...internalRows].sort(
