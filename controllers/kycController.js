@@ -622,13 +622,11 @@ exports.createSumsubSession = async (req, res) => {
         message: "KYC Anda sudah terverifikasi.",
       });
     }
-    if (kyc?.status === "PENDING" && kyc.provider_id === "sumsub") {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Verifikasi Anda sedang diproses. Tunggu hasilnya terlebih dahulu.",
-      });
-    }
+    /*
+     * PENDING + sumsub → JANGAN di-block: applicant pending bisa
+     * di-resume pakai accessToken baru (beda dengan didit/veriff).
+     * SDK lanjut dari step terakhir user.
+     */
 
     const { levelName } = req.body || {};
     const { applicant, token } = await sumsubService.createAccessToken({
