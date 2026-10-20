@@ -45,15 +45,26 @@ async function tickPrice() {
 // habis (pending jobs diproses Worker seperti biasa).
 // ------------------------------------------------------------------
 
+// Literal requires — wajib statis supaya Vercel bundler include file-nya.
 const QUEUE_WORKERS = {
-  swap: "../workers/swap.worker",
-  earn: "../workers/earn.worker",
-  "earn-claim": "../workers/earn-claim.worker",
+  swap: {
+    load: () => require("../workers/swap.worker"),
+    resolved: () => require.resolve("../workers/swap.worker"),
+  },
+  earn: {
+    load: () => require("../workers/earn.worker"),
+    resolved: () => require.resolve("../workers/earn.worker"),
+  },
+  "earn-claim": {
+    load: () => require("../workers/earn-claim.worker"),
+    resolved: () => require.resolve("../workers/earn-claim.worker"),
+  },
 };
 
 async function drainQueue(name, timeoutMs = 40_000) {
-  const modPath = QUEUE_WORKERS[name];
-  const worker = require(modPath);
+  const w = QUEUE_WORKERS[name];
+  delete require.cache[w.resolved()];
+  const worker = w.load();
   if (
     typeof worker.run === "function" &&
     worker.isRunning &&
@@ -95,7 +106,7 @@ async function drainQueue(name, timeoutMs = 40_000) {
     // tidak numpuk sampai kena 'max number of clients'.
     await worker.close().catch(() => {});
     await worker.opts?.connection?.quit?.().catch(() => {});
-    delete require.cache[require.resolve(modPath)];
+    delete require.cache[w.resolved()];
   }
   return { queue: name, drained: emptyStreak >= 2, counts: lastCounts };
 }
