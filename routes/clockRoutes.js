@@ -88,4 +88,32 @@ router.post("/clock/run-checker", async (req, res) => {
   }
 });
 
+// Vercel Cron endpoint — serverless tidak bisa menjalankan worker.js,
+// jadi transisi waktu + push notif overdue/past-due/liquidation dipicu
+// lewat HTTP GET terjadwal. Vercel mengirim `Authorization: Bearer
+// <CRON_SECRET>`; diverifikasi timing-safe. Di luar /clock/* supaya
+// tidak kena clockAuth (x-clock-key).
+router.get("/cron/installment-tick", async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const bearer = String(req.headers.authorization || "");
+  const expected = `Bearer ${secret}`;
+  const ok =
+    secret &&
+    bearer.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(bearer), Buffer.from(expected));
+  if (!ok) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  try {
+    const now = await businessClock.current();
+    const result = await tick(now);
+    return res.status(200).json({
+      success: true,
+      data: { effective_at: now, ...result },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;
