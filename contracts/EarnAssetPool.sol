@@ -160,7 +160,9 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
         totalPrincipalLiability += principal;
         totalRewardLiability += expectedReward;
 
-        uint64 maturityAt = uint64(block.timestamp + (termCode * 1 days));
+        uint64 maturityAt = uint64(
+            block.timestamp + (uint256(termCode) * 1 days)
+        );
         uint256 posId = nextPositionId++;
 
         positions[posId] = Position({
