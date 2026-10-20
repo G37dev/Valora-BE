@@ -25,7 +25,7 @@ const TOKEN_ADDRESSES = {
   USDT: process.env.USDT_DUMMY_CONTRACT_ADDRESS,
   USDC: process.env.USDC_DUMMY_CONTRACT_ADDRESS,
   XAUT: process.env.XAUT_DUMMY_CONTRACT_ADDRESS,
-  GOLD: process.env.GOLD_DUMMY_CONTRACT_ADDRES,
+  GOLD: process.env.GOLD_DUMMY_CONTRACT_ADDRESS,
 };
 
 // @desc    Ambil riwayat transaksi & hitung progress konfirmasi blok
@@ -219,112 +219,109 @@ exports.requestWithdraw = async (req, res) => {
       `✅ [STEP 3] Catatan transaksi PENDING dibuat di DB dengan ID/Hash sementara: ${pendingTx.tx_hash}`,
     );
 
-    // 3. Kirim respons sukses ke Frontend SEKARANG JUGA (Instant Response)
-    res.status(200).json({
-      success: true,
-      message: "Withdraw sedang diproses di latar belakang.",
-      data: {
-        txHash: pendingTx.tx_hash,
-        asset: asset.toUpperCase(),
-        amount,
-        destinationAddress,
-      },
-    });
+    // 3. EKSEKUSI BLOCKCHAIN SECARA SINKRON.
+    // PENTING: di serverless (Vercel) async pasca-response di-freeze,
+    // jadi transfer AA harus di-await sebelum respond. Flow ini ~15-30s,
+    // masih di bawah batas function duration.
+    try {
+      console.log("----------------------------------------");
+      console.log(
+        `🚀 [WITHDRAW START] Memproses ${amount} ${asset} dari Smart Wallet ${userWallet.address} ke ${destinationAddress}`,
+      );
 
-    // 4. EKSEKUSI BLOCKCHAIN DI LATAR BELAKANG (Background Async Process)
-    (async () => {
-      try {
-        console.log("----------------------------------------");
-        console.log(
-          `🚀 [BACKGROUND START] Memproses ${amount} ${asset} dari Smart Wallet ${userWallet.address} ke ${destinationAddress}`,
-        );
+      // Ambil objek kontrak token ERC-20
+      const contract = getContract({
+        client,
+        chain: sepolia,
+        address: tokenAddress,
+      });
+      console.log("✅ [STEP A] Kontrak token berhasil diinisialisasi.");
 
-        // Ambil objek kontrak token ERC-20
-        const contract = getContract({
-          client,
-          chain: sepolia,
-          address: tokenAddress,
-        });
-        console.log(
-          "✅ [BACKGROUND STEP A] Kontrak token berhasil diinisialisasi.",
-        );
+      // Siapkan parameter transfer token
+      const tx = transfer({
+        contract,
+        to: destinationAddress,
+        amount: amount.toString(),
+      });
+      console.log("✅ [STEP B] Payload transfer ERC-20 berhasil disiapkan.");
 
-        // Siapkan parameter transfer token
-        const tx = transfer({
-          contract,
-          to: destinationAddress,
-          amount: amount.toString(),
-        });
-        console.log(
-          "✅ [BACKGROUND STEP B] Payload transfer ERC-20 berhasil disiapkan.",
-        );
+      // Konfigurasi Smart Wallet (AA) dengan Paymaster (gasless: true)
+      const userSmartWalletConfig = smartWallet({
+        chain: sepolia,
+        factoryAddress: process.env.TW_FACTORY_ADDRESS,
+        gasless: true,
+        overrides: {
+          accountSalt: coreId, // <-- Tambahkan ini agar salt-nya sinkron dengan saat activateWallet
+        },
+      });
+      console.log(
+        `✅ [STEP C] Konfigurasi smartWallet siap menggunakan Factory: ${process.env.TW_FACTORY_ADDRESS}`,
+      );
 
-        // Konfigurasi Smart Wallet (AA) dengan Paymaster (gasless: true)
-        const userSmartWalletConfig = smartWallet({
-          chain: sepolia,
-          factoryAddress: process.env.TW_FACTORY_ADDRESS,
-          gasless: true,
-          overrides: {
-            accountSalt: coreId, // <-- Tambahkan ini agar salt-nya sinkron dengan saat activateWallet
-          },
-        });
-        console.log(
-          `✅ [BACKGROUND STEP C] Konfigurasi smartWallet siap menggunakan Factory: ${process.env.TW_FACTORY_ADDRESS}`,
-        );
+      // Hubungkan ke Smart Wallet milik user menggunakan adminAccount sebagai signer
+      const userSmartAccount = await userSmartWalletConfig.connect({
+        client,
+        personalAccount: adminAccount,
+        accountAddress: userWallet.address,
+      });
+      console.log(
+        `✅ [STEP D] Berhasil connect ke userSmartAccount dengan Alamat: ${userSmartAccount.address}`,
+      );
+      console.log(
+        `ℹ️ [INFO SIGNER] Personal Account (Signer) yang terpasang: ${adminAccount.address}`,
+      );
 
-        // Hubungkan ke Smart Wallet milik user menggunakan adminAccount sebagai signer
-        const userSmartAccount = await userSmartWalletConfig.connect({
-          client,
-          personalAccount: adminAccount,
-          accountAddress: userWallet.address,
-        });
-        console.log(
-          `✅ [BACKGROUND STEP D] Berhasil connect ke userSmartAccount dengan Alamat: ${userSmartAccount.address}`,
-        );
-        console.log(
-          `ℹ️ [INFO SIGNER] Personal Account (Signer) yang terpasang: ${adminAccount.address}`,
-        );
+      // Eksekusi pengiriman transaksi sekali jalan menggunakan Smart Account
+      console.log(
+        "⏳ [STEP E] Mengirim transaksi ke jaringan blockchain via sendTransaction...",
+      );
+      const txResult = await sendTransaction({
+        transaction: tx,
+        account: userSmartAccount,
+      });
 
-        // Eksekusi pengiriman transaksi sekali jalan menggunakan Smart Account
-        console.log(
-          "⏳ [BACKGROUND STEP E] Mengirim transaksi ke jaringan blockchain via sendTransaction...",
-        );
-        const txResult = await sendTransaction({
-          transaction: tx,
-          account: userSmartAccount,
-        });
+      const realTxHash = txResult.transactionHash;
+      console.log(
+        `🎉 [WITHDRAW SUCCESS] Transaksi Berhasil! Real Hash: ${realTxHash}`,
+      );
 
-        const realTxHash = txResult.transactionHash;
-        console.log(
-          `🎉 [BACKGROUND SUCCESS] Transaksi Berhasil! Real Hash: ${realTxHash}`,
-        );
+      const rpcRequest = getRpcClient({ client, chain: sepolia });
+      const blockNumBigInt = await eth_blockNumber(rpcRequest);
+      const currentBlockNumber = Number(blockNumBigInt);
+      console.log(`✅ [STEP F] Block Number saat ini: ${currentBlockNumber}`);
 
-        const rpcRequest = getRpcClient({ client, chain: sepolia });
-        const blockNumBigInt = await eth_blockNumber(rpcRequest);
-        const currentBlockNumber = Number(blockNumBigInt);
-        console.log(
-          `✅ [BACKGROUND STEP F] Block Number saat ini: ${currentBlockNumber}`,
-        );
+      // Update database dengan Hash asli dari blockchain
+      await pendingTx.update({
+        tx_hash: realTxHash,
+        tx_block_number: currentBlockNumber,
+        status: "PENDING",
+      });
+      console.log("✅ [WITHDRAW FINISH] Database diperbarui real hash.");
+      console.log("----------------------------------------");
 
-        // Update database dengan Hash asli dari blockchain
-        await pendingTx.update({
-          tx_hash: realTxHash,
-          tx_block_number: currentBlockNumber,
-          status: "PENDING",
-        });
-        console.log(
-          "✅ [BACKGROUND FINISH] Database berhasil diperbarui dengan real hash.",
-        );
-        console.log("----------------------------------------");
-      } catch (bgError) {
-        console.error(
-          "❌ [BACKGROUND ERROR] Gagal mengeksekusi withdraw AA di latar belakang:",
-          bgError,
-        );
-        console.error("Detail Error Stack:", bgError.stack || bgError);
-        await pendingTx.update({ status: "FAILED" });
-      }
-    })();
+      return res.status(200).json({
+        success: true,
+        message: "Withdraw berhasil dikirim ke jaringan.",
+        data: {
+          txHash: realTxHash,
+          asset: asset.toUpperCase(),
+          amount,
+          destinationAddress,
+        },
+      });
+    } catch (bgError) {
+      console.error(
+        "❌ [WITHDRAW ERROR] Gagal mengeksekusi withdraw AA:",
+        bgError,
+      );
+      console.error("Detail Error Stack:", bgError.stack || bgError);
+      await pendingTx.update({ status: "FAILED" });
+      return res.status(502).json({
+        success: false,
+        message: "Eksekusi withdraw on-chain gagal. Silakan coba lagi.",
+        error: bgError.message,
+      });
+    }
   } catch (error) {
     console.error(
       "❌ [SERVER ERROR] Gagal memproses request withdraw utama:",
