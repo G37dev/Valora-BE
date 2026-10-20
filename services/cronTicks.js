@@ -46,13 +46,14 @@ async function tickPrice() {
 // ------------------------------------------------------------------
 
 const QUEUE_WORKERS = {
-  swap: () => require("../workers/swap.worker"),
-  earn: () => require("../workers/earn.worker"),
-  "earn-claim": () => require("../workers/earn-claim.worker"),
+  swap: "../workers/swap.worker",
+  earn: "../workers/earn.worker",
+  "earn-claim": "../workers/earn-claim.worker",
 };
 
 async function drainQueue(name, timeoutMs = 40_000) {
-  const worker = QUEUE_WORKERS[name]();
+  const modPath = QUEUE_WORKERS[name];
+  const worker = require(modPath);
   if (
     typeof worker.run === "function" &&
     worker.isRunning &&
@@ -90,6 +91,11 @@ async function drainQueue(name, timeoutMs = 40_000) {
     }
   } finally {
     await queue.close().catch(() => {});
+    // Serverless: tutup koneksi Redis worker+shared conn supaya
+    // tidak numpuk sampai kena 'max number of clients'.
+    await worker.close().catch(() => {});
+    await worker.opts?.connection?.quit?.().catch(() => {});
+    delete require.cache[require.resolve(modPath)];
   }
   return { queue: name, drained: emptyStreak >= 2, counts: lastCounts };
 }
