@@ -227,4 +227,10 @@ const startBlockchainListener = async () => {
   console.log("Blockchain listener aktif");
   console.log("========================================");
 };
-module.exports = { startBlockchainListener };
+module.exports = {
+  startBlockchainListener,
+  handleTransferEvent,
+  getTokensToWatch,
+  client,
+  customSepolia,
+};

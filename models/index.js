@@ -31,6 +31,7 @@ const UserPushToken = require("./UserPushToken");
 
 // Business Clock (time simulation)
 const BusinessClock = require("./BusinessClock");
+const CronCheckpoint = require("./CronCheckpoint");
 
 // WhatsApp OTP
 const WaOtpToken = require("./WaOtpToken");
@@ -441,6 +442,9 @@ module.exports = {
 
   // Business Clock
   BusinessClock,
+
+  // Cron checkpoints (serverless ticks)
+  CronCheckpoint,
 
   // WhatsApp OTP
   WaOtpToken,

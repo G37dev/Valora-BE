@@ -88,12 +88,11 @@ router.post("/clock/run-checker", async (req, res) => {
   }
 });
 
-// Vercel Cron endpoint — serverless tidak bisa menjalankan worker.js,
-// jadi transisi waktu + push notif overdue/past-due/liquidation dipicu
-// lewat HTTP GET terjadwal. Vercel mengirim `Authorization: Bearer
-// <CRON_SECRET>`; diverifikasi timing-safe. Di luar /clock/* supaya
-// tidak kena clockAuth (x-clock-key).
-router.get("/cron/installment-tick", async (req, res) => {
+// Vercel Cron endpoints — serverless tidak bisa menjalankan worker.js,
+// jadi semua scheduler/poller dipicu lewat HTTP GET terjadwal. Vercel
+// mengirim `Authorization: Bearer <CRON_SECRET>`; diverifikasi
+// timing-safe. Di luar /clock/* supaya tidak kena clockAuth.
+function cronAuth(req, res, next) {
   const secret = process.env.CRON_SECRET;
   const bearer = String(req.headers.authorization || "");
   const expected = `Bearer ${secret}`;
@@ -104,16 +103,53 @@ router.get("/cron/installment-tick", async (req, res) => {
   if (!ok) {
     return res.status(401).json({ success: false, message: "Unauthorized" });
   }
+  next();
+}
+
+const runCron = (label, fn) => async (req, res) => {
   try {
-    const now = await businessClock.current();
-    const result = await tick(now);
-    return res.status(200).json({
-      success: true,
-      data: { effective_at: now, ...result },
-    });
+    const data = await fn();
+    return res.status(200).json({ success: true, label, data });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res
+      .status(500)
+      .json({ success: false, label, message: error.message });
   }
-});
+};
+
+const cronTicks = require("../services/cronTicks");
+
+router.get(
+  "/cron/installment-tick",
+  cronAuth,
+  runCron("installment-tick", async () => {
+    const now = await businessClock.current();
+    return { effective_at: now, ...(await tick(now)) };
+  }),
+);
+
+router.get(
+  "/cron/loan-tick",
+  cronAuth,
+  runCron("loan-tick", cronTicks.tickLoan),
+);
+
+router.get(
+  "/cron/price-tick",
+  cronAuth,
+  runCron("price-tick", cronTicks.tickPrice),
+);
+
+router.get(
+  "/cron/queue-drain",
+  cronAuth,
+  runCron("queue-drain", cronTicks.drainAllQueues),
+);
+
+router.get(
+  "/cron/chain-events-tick",
+  cronAuth,
+  runCron("chain-events-tick", cronTicks.tickChainEvents),
+);
 
 module.exports = router;

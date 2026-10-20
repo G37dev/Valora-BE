@@ -20,31 +20,125 @@ const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY,
 });
 
+const getEarnPoolsToWatch = () => [
+  {
+    name: "USDT_POOL",
+    asset: "USDT",
+    address: process.env.EARN_USDT_POOL_CONTRACT_ADDRESS,
+  },
+  {
+    name: "USDC_POOL",
+    asset: "USDC",
+    address: process.env.EARN_USDC_POOL_CONTRACT_ADDRESS,
+  },
+  {
+    name: "GOLD_POOL",
+    asset: "GOLD",
+    address: process.env.EARN_GOLD_POOL_CONTRACT_ADDRESS,
+  },
+  {
+    name: "XAUT_POOL",
+    asset: "XAUT",
+    address: process.env.EARN_XAUT_POOL_CONTRACT_ADDRESS,
+  },
+];
+
+const handleEarnCreatedEvent = async ({ event, pool }) => {
+  const { user, positionId, principal } = event.args;
+  const txHash = event.transactionHash;
+  const blockNumber = event.blockNumber;
+
+  try {
+    const userWallet = await Wallet.findOne({
+      where: { address: { [Op.iLike]: user } },
+    });
+
+    if (userWallet) {
+      console.log(
+        `🎯 [Earn Create] User ${userWallet.core_id} membuka posisi #${positionId} (${pool.asset})! Hash: ${txHash}`,
+      );
+
+      const existingTx = await Transaction.findOne({
+        where: { tx_hash: txHash },
+      });
+
+      if (!existingTx) {
+        const formattedPrincipal = toTokens(principal, 6);
+
+        await Transaction.create({
+          core_id: userWallet.core_id,
+          tx_hash: txHash,
+          type: "EARN_DEPOSIT",
+          asset: pool.asset,
+          amount: formattedPrincipal,
+          tx_block_number: Number(blockNumber),
+          status: "COMPLETED",
+        });
+
+        console.log(
+          `💾 Transaksi EARN_DEPOSIT ${pool.asset} berhasil dicatat ke database!`,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(
+      `Gagal memproses event EarnPositionCreated ${pool.name}:`,
+      err.message,
+    );
+  }
+};
+
+const handleEarnClaimedEvent = async ({ event, pool }) => {
+  const { user, positionId, principal, reward } = event.args;
+  const txHash = event.transactionHash;
+  const blockNumber = event.blockNumber;
+
+  try {
+    const userWallet = await Wallet.findOne({
+      where: { address: { [Op.iLike]: user } },
+    });
+
+    if (userWallet) {
+      console.log(
+        `💰 [Earn Claim] User ${userWallet.core_id} melakukan claim posisi #${positionId} (${pool.asset})! Hash: ${txHash}`,
+      );
+
+      const existingTx = await Transaction.findOne({
+        where: { tx_hash: txHash },
+      });
+
+      if (!existingTx) {
+        // Total payout adalah principal + reward
+        const totalPayout = principal + reward;
+        const formattedPayout = toTokens(totalPayout, 6);
+
+        await Transaction.create({
+          core_id: userWallet.core_id,
+          tx_hash: txHash,
+          type: "EARN_CLAIM",
+          asset: pool.asset,
+          amount: formattedPayout,
+          tx_block_number: Number(blockNumber),
+          status: "COMPLETED",
+        });
+
+        console.log(
+          `💾 Transaksi EARN_CLAIM ${pool.asset} (Principal + Reward) berhasil dicatat ke database!`,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(
+      `Gagal memproses event EarnPositionClaimed ${pool.name}:`,
+      err.message,
+    );
+  }
+};
+
 const startEarnListener = async () => {
   console.log("📡 Memulai Earn Pool Contract Listener (Deposit & Claim)...");
 
-  const earnPoolsToWatch = [
-    {
-      name: "USDT_POOL",
-      asset: "USDT",
-      address: process.env.EARN_USDT_POOL_CONTRACT_ADDRESS,
-    },
-    {
-      name: "USDC_POOL",
-      asset: "USDC",
-      address: process.env.EARN_USDC_POOL_CONTRACT_ADDRESS,
-    },
-    {
-      name: "GOLD_POOL",
-      asset: "GOLD",
-      address: process.env.EARN_GOLD_POOL_CONTRACT_ADDRESS,
-    },
-    {
-      name: "XAUT_POOL",
-      asset: "XAUT",
-      address: process.env.EARN_XAUT_POOL_CONTRACT_ADDRESS,
-    },
-  ];
+  const earnPoolsToWatch = getEarnPoolsToWatch();
 
   // 1. Event saat posisi earn dibuat (createEarn)
   const positionCreatedEvent = prepareEvent({
@@ -82,48 +176,7 @@ const startEarnListener = async () => {
       events: [positionCreatedEvent],
       onEvents: async (events) => {
         for (const event of events) {
-          const { user, positionId, principal } = event.args;
-          const txHash = event.transactionHash;
-          const blockNumber = event.blockNumber;
-
-          try {
-            const userWallet = await Wallet.findOne({
-              where: { address: { [Op.iLike]: user } },
-            });
-
-            if (userWallet) {
-              console.log(
-                `🎯 [Earn Create] User ${userWallet.core_id} membuka posisi #${positionId} (${pool.asset})! Hash: ${txHash}`,
-              );
-
-              const existingTx = await Transaction.findOne({
-                where: { tx_hash: txHash },
-              });
-
-              if (!existingTx) {
-                const formattedPrincipal = toTokens(principal, 6);
-
-                await Transaction.create({
-                  core_id: userWallet.core_id,
-                  tx_hash: txHash,
-                  type: "EARN_DEPOSIT",
-                  asset: pool.asset,
-                  amount: formattedPrincipal,
-                  tx_block_number: Number(blockNumber),
-                  status: "COMPLETED",
-                });
-
-                console.log(
-                  `💾 Transaksi EARN_DEPOSIT ${pool.asset} berhasil dicatat ke database!`,
-                );
-              }
-            }
-          } catch (err) {
-            console.error(
-              `Gagal memproses event EarnPositionCreated ${pool.name}:`,
-              err.message,
-            );
-          }
+          await handleEarnCreatedEvent({ event, pool });
         }
       },
     });
@@ -134,54 +187,16 @@ const startEarnListener = async () => {
       events: [positionClaimedEvent],
       onEvents: async (events) => {
         for (const event of events) {
-          const { user, positionId, principal, reward } = event.args;
-          const txHash = event.transactionHash;
-          const blockNumber = event.blockNumber;
-
-          try {
-            const userWallet = await Wallet.findOne({
-              where: { address: { [Op.iLike]: user } },
-            });
-
-            if (userWallet) {
-              console.log(
-                `💰 [Earn Claim] User ${userWallet.core_id} melakukan claim posisi #${positionId} (${pool.asset})! Hash: ${txHash}`,
-              );
-
-              const existingTx = await Transaction.findOne({
-                where: { tx_hash: txHash },
-              });
-
-              if (!existingTx) {
-                // Total payout adalah principal + reward
-                const totalPayout = principal + reward;
-                const formattedPayout = toTokens(totalPayout, 6);
-
-                await Transaction.create({
-                  core_id: userWallet.core_id,
-                  tx_hash: txHash,
-                  type: "EARN_CLAIM",
-                  asset: pool.asset,
-                  amount: formattedPayout,
-                  tx_block_number: Number(blockNumber),
-                  status: "COMPLETED",
-                });
-
-                console.log(
-                  `💾 Transaksi EARN_CLAIM ${pool.asset} (Principal + Reward) berhasil dicatat ke database!`,
-                );
-              }
-            }
-          } catch (err) {
-            console.error(
-              `Gagal memproses event EarnPositionClaimed ${pool.name}:`,
-              err.message,
-            );
-          }
+          await handleEarnClaimedEvent({ event, pool });
         }
       },
     });
   }
 };
 
-module.exports = { startEarnListener };
+module.exports = {
+  startEarnListener,
+  getEarnPoolsToWatch,
+  handleEarnCreatedEvent,
+  handleEarnClaimedEvent,
+};
