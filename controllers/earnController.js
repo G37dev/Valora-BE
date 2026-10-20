@@ -8,9 +8,9 @@ const { EARN_STATUS } = require("../services/earn/earn.constants");
 
 const getUserEarnPositions = async (req, res) => {
   try {
-    const { core_id } = req.params;
+    const coreId = req.user?.coreId;
 
-    if (!core_id) {
+    if (!coreId) {
       return res.status(400).json({
         success: false,
         message: "core_id wajib diisi.",
@@ -19,7 +19,7 @@ const getUserEarnPositions = async (req, res) => {
 
     const positions = await EarnPosition.findAll({
       where: {
-        coreId: core_id,
+        coreId,
       },
       order: [["created_at", "DESC"]],
     });
@@ -126,8 +126,9 @@ const getUserEarnPositions = async (req, res) => {
  */
 const recordEarnPosition = async (req, res) => {
   try {
-    const { core_id, asset, amount, principal, term_code, idempotency_key } =
-      req.body;
+    const { asset, amount, principal, term_code, idempotency_key } = req.body;
+
+    const core_id = req.user?.coreId;
 
     if (!core_id) {
       return res.status(400).json({
@@ -262,7 +263,7 @@ const recordEarnPosition = async (req, res) => {
 const claimEarnPosition = async (req, res) => {
   try {
     const { position_id } = req.params;
-    const { core_id } = req.body;
+    const core_id = req.user?.coreId;
 
     if (!position_id) {
       return res.status(400).json({

@@ -556,17 +556,12 @@ const earnWorker = new Worker(
       };
 
       /**
-       * Kalau principal DB memang harus merepresentasikan
-       * principal aktual setelah platform fee, maka lebih
-       * baik update principal berdasarkan event.
-       *
-       * Tapi lakukan hanya kalau desain DB kamu memang
-       * menginginkan principal = net principal.
+       * Pool adalah sumber kebenaran — principal DB selalu
+       * disinkronkan ke nilai net dari event (sudah dipotong
+       * platform fee on-chain).
        */
 
-      if (platformFeeBps > 0) {
-        updateData.principal = eventPrincipalBigInt.toString();
-      }
+      updateData.principal = eventPrincipalBigInt.toString();
 
       await position.update(updateData);
 
