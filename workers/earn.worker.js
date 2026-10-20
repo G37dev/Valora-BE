@@ -160,7 +160,7 @@ const earnWorker = new Worker(
 
       const termCode = Number(position.termCode);
 
-      if (!Number.isInteger(termCode) || termCode < 1 || termCode > 255) {
+      if (!Number.isInteger(termCode) || termCode < 1 || termCode > 65535) {
         throw new Error(`termCode tidak valid: ${position.termCode}`);
       }
 
