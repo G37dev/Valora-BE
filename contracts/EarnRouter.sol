@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
 interface IEarnPool {
-    function createEarn(address user, uint256 amount, uint8 termCode) external;
+    function createEarn(address user, uint256 amount, uint16 termCode) external;
     function claim(address user, uint256 positionId) external;
 }
 
@@ -20,7 +20,7 @@ contract EarnRouter is Ownable, Pausable {
     mapping(address => address) public assetPools;
 
     event PoolUpdated(address indexed token, address indexed pool);
-    event EarnRouted(address indexed user, address indexed token, uint256 amount, uint8 termCode);
+    event EarnRouted(address indexed user, address indexed token, uint256 amount, uint16 termCode);
     event ClaimRouted(address indexed user, address indexed token, uint256 positionId);
 
     error InvalidAddress();
@@ -42,7 +42,7 @@ contract EarnRouter is Ownable, Pausable {
     /**
      * @notice User memanggil fungsi ini untuk membuka posisi Earn. Router mengorkestrasi principal routing[cite: 2].
      */
-    function createEarn(address token, uint256 amount, uint8 termCode) external whenNotPaused {
+    function createEarn(address token, uint256 amount, uint16 termCode) external whenNotPaused {
         address pool = assetPools[token];
         if (pool == address(0)) revert PoolNotSupported();
 

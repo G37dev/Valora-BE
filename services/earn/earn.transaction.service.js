@@ -2,6 +2,7 @@ const {
   prepareContractCall,
   sendTransaction,
   waitForReceipt,
+  getContract,
 } = require("thirdweb");
 
 const {
@@ -118,7 +119,7 @@ const createEarnTransaction = async ({
 
   const transaction = prepareContractCall({
     contract: routerContract,
-    method: "function createEarn(address token,uint256 amount,uint8 termCode)",
+    method: "function createEarn(address token,uint256 amount,uint16 termCode)",
     params: [tokenAddress, amount, termCode],
   });
 
@@ -142,8 +143,11 @@ const claimEarnTransaction = async ({
   tokenAddress,
   positionId,
   smartAccount,
+  routerAddress,
 }) => {
-  const routerContract = getRouterContract();
+  const routerContract = routerAddress
+    ? getContract({ client, chain: sepolia, address: routerAddress })
+    : getRouterContract();
 
   console.log("[Earn TX] Claiming Earn:", {
     token: tokenAddress,

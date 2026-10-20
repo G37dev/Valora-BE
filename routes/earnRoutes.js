@@ -5,7 +5,11 @@ const {
   getUserEarnPositions,
   recordEarnPosition,
   claimEarnPosition,
+  getEarnConfig,
 } = require("../controllers/earnController");
+
+// Endpoint konfigurasi earn (APR live per asset/term)
+router.get("/config", verifyToken, getEarnConfig);
 
 // Endpoint untuk melihat posisi earn user
 router.get("/positions/:core_id", verifyToken, getUserEarnPositions);

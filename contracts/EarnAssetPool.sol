@@ -30,8 +30,8 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
         address owner;        // Slot 2: 160 bits[cite: 2]
         uint64 maturityAt;    // Slot 2: 64 bits[cite: 2]
         uint16 aprBps;        // Slot 2: 16 bits[cite: 2]
-        uint8 termCode;       // Slot 2: 8 bits[cite: 2]
-        uint8 status;         // Slot 2: 8 bits (0 = Active, 1 = Claimed)[cite: 2]
+        uint16 termCode;      // Slot 2: 16 bits (term dalam hari; uint16 agar 360D muat)[cite: 2]
+        uint8 status;         // Slot 3: 8 bits (0 = Active, 1 = Claimed)[cite: 2]
     }
 
     IERC20 public immutable assetToken;
@@ -42,8 +42,9 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
     address public feeTreasurySafe;
     address public governanceSafe;
 
-    mapping(uint8 => uint16) public aprConfigs;
-    uint16 public platformFeeBps = 0; 
+    mapping(uint16 => uint16) public aprConfigs;
+    uint16 public platformFeeBps = 0;
+    uint256 public minFeeRaw;
     uint256 public minDeposit;
 
     // Incremental aggregates untuk menghindari looping yang memicu gas spike[cite: 2]
@@ -72,7 +73,7 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
     // Event on-chain untuk dibaca oleh backend indexer (PostgreSQL) tanpa redundant history on-chain[cite: 2]
     event EarnPositionCreated(address indexed user, uint256 indexed positionId, uint256 principal, uint64 maturityAt, uint16 aprBps);
     event EarnPositionClaimed(address indexed user, uint256 indexed positionId, uint256 principal, uint256 reward);
-    event AprUpdated(uint8 termCode, uint16 aprBps);
+    event AprUpdated(uint16 termCode, uint16 aprBps);
     event PoolCapacityUpdated(uint256 hardMax, uint256 bufferMin);
     event StrategyDeployed(uint256 amount);
     event StrategyCapitalReturned(uint256 returnedPrincipal, uint256 realizedYield);
@@ -108,13 +109,17 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
         router = _router;
     }
 
-    function setAPR(uint8 termCode, uint16 aprBps) external onlyOwner {
+    function setAPR(uint16 termCode, uint16 aprBps) external onlyOwner {
         aprConfigs[termCode] = aprBps;
         emit AprUpdated(termCode, aprBps);
     }
 
     function setPlatformFeeBps(uint16 _feeBps) external onlyOwner {
         platformFeeBps = _feeBps;
+    }
+
+    function setMinFeeRaw(uint256 _minFeeRaw) external onlyOwner {
+        minFeeRaw = _minFeeRaw;
     }
 
     function setLimits(uint256 _hardMax, uint256 _bufferMin, uint256 _minDeposit) external onlyOwner {
@@ -130,13 +135,15 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
     /**
      * @notice O(1) Create Earn. Principal ditransfer ke Pool, platform fee ke Fee Treasury[cite: 2].
      */
-    function createEarn(address user, uint256 amount, uint8 termCode) external onlyRouter nonReentrant whenNotPaused {
+    function createEarn(address user, uint256 amount, uint16 termCode) external onlyRouter nonReentrant whenNotPaused {
         if (amount < minDeposit) revert InvalidAmount();
-        
+
         uint16 currentAprBps = aprConfigs[termCode];
         if (currentAprBps == 0) revert UnsupportedTerm();
 
         uint256 platformFee = (amount * platformFeeBps) / 10000;
+        if (platformFee < minFeeRaw) platformFee = minFeeRaw;
+        if (platformFee >= amount) revert InvalidAmount();
         uint256 principal = amount - platformFee;
 
         // Principal ditransfer langsung dari User ke Pool secara atomic[cite: 2]
@@ -146,8 +153,8 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
             assetToken.safeTransfer(feeTreasurySafe, platformFee);
         }
 
-        // Kalkulasi reward deterministic saat pembuatan posisi[cite: 2]
-        uint256 expectedReward = (principal * currentAprBps * termCode) / (365 * 10000);
+        // Kalkulasi reward deterministic saat pembuatan posisi (actual/360 sesuai brief)[cite: 2]
+        uint256 expectedReward = (principal * currentAprBps * termCode) / (360 * 10000);
 
         // Update kewajiban secara inkremental tanpa melakukan looping pada posisi sebelumnya[cite: 2]
         totalPrincipalLiability += principal;
@@ -185,7 +192,7 @@ contract EarnAssetPool is Ownable, ReentrancyGuard, Pausable {
         pos.status = 1;
 
         // Reward derived calculation, bukan mengambil dari dedicated storage slot[cite: 2]
-        uint256 reward = (pos.principalRaw * pos.aprBps * pos.termCode) / (365 * 10000);
+        uint256 reward = (pos.principalRaw * pos.aprBps * pos.termCode) / (360 * 10000);
         uint256 totalPayout = pos.principalRaw + reward;
 
         // Penurunan kewajiban secara inkremental saat claim[cite: 2]

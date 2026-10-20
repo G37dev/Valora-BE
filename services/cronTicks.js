@@ -226,10 +226,138 @@ async function tickChainEvents() {
   return out;
 }
 
+// ------------------------------------------------------------------
+// Earn maturity forecast + treasury monitor (brief §8–14)
+// Per-pool: liquid balance vs liabilities vs maturing positions
+// di horizon D-1/D-3/D-7/D-10.
+// ------------------------------------------------------------------
+
+const MATURITY_HORIZONS = [1, 3, 7, 10];
+
+async function tickEarnTreasury() {
+  const { EarnPosition } = require("../models");
+  const {
+    getEarnPoolAddress,
+    getTokenContract,
+    readContract: _rc,
+  } = require("./earn/earn.blockchain.service");
+  const { readContract } = require("thirdweb");
+  const { LEGACY_EARN_POOLS } = require("./earn/earn.constants");
+  const { Op } = require("sequelize");
+
+  const report = {};
+  const now = Date.now();
+
+  for (const asset of ["USDT", "USDC", "GOLD", "XAUT"]) {
+    const pools = [];
+    try {
+      pools.push({ label: "v2", address: getEarnPoolAddress(asset) });
+    } catch {}
+    if (LEGACY_EARN_POOLS[asset]) {
+      pools.push({ label: "v1", address: LEGACY_EARN_POOLS[asset] });
+    }
+
+    const poolReports = [];
+    for (const pool of pools) {
+      try {
+        const contract = getContract({
+          client: bl.client,
+          chain: bl.customSepolia,
+          address: pool.address,
+        });
+        const tokenAddr = (
+          await readContract({
+            contract,
+            method: "function assetToken() view returns (address)",
+            params: [],
+          })
+        ).toString();
+        const token = getContract({
+          client: bl.client,
+          chain: bl.customSepolia,
+          address: tokenAddr,
+        });
+        const [liquid, principalLiab, rewardLiab] = await Promise.all([
+          readContract({
+            contract: token,
+            method: "function balanceOf(address) view returns (uint256)",
+            params: [pool.address],
+          }),
+          readContract({
+            contract,
+            method: "function totalPrincipalLiability() view returns (uint256)",
+            params: [],
+          }),
+          readContract({
+            contract,
+            method: "function totalRewardLiability() view returns (uint256)",
+            params: [],
+          }),
+        ]);
+
+        // Posisi ACTIVE di DB untuk pool ini, matang <= 10 hari
+        const positions = await EarnPosition.findAll({
+          where: {
+            asset,
+            status: "ACTIVE",
+            poolAddress: pool.address,
+            maturityAt: {
+              [Op.lte]: new Date(now + 10 * 86400_000),
+            },
+          },
+          attributes: ["id", "positionId", "principal", "maturityAt"],
+        });
+
+        const horizons = {};
+        for (const d of MATURITY_HORIZONS) {
+          const due = positions.filter(
+            (p) =>
+              p.maturityAt &&
+              new Date(p.maturityAt).getTime() <= now + d * 86400_000,
+          );
+          horizons[`d${d}`] = {
+            count: due.length,
+            principal: due
+              .reduce((s, p) => s + BigInt(p.principal || 0), 0n)
+              .toString(),
+          };
+        }
+
+        const totalLiab = BigInt(principalLiab) + BigInt(rewardLiab);
+        poolReports.push({
+          pool: pool.address,
+          version: pool.label,
+          liquid: BigInt(liquid).toString(),
+          principal_liability: BigInt(principalLiab).toString(),
+          reward_liability: BigInt(rewardLiab).toString(),
+          total_liability: totalLiab.toString(),
+          liquidity_ok: BigInt(liquid) >= totalLiab,
+          shortfall:
+            BigInt(liquid) >= totalLiab
+              ? "0"
+              : (totalLiab - BigInt(liquid)).toString(),
+          maturing: horizons,
+        });
+      } catch (e) {
+        poolReports.push({
+          pool: pool.address,
+          version: pool.label,
+          error: e.message,
+        });
+      }
+    }
+    report[asset] = poolReports;
+  }
+
+  console.log("[earn-treasury]", JSON.stringify(report));
+  return report;
+}
+
 module.exports = {
   tickLoan,
   tickPrice,
   drainQueue,
   drainAllQueues,
   tickChainEvents,
+  tickEarnTreasury,
 };

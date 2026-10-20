@@ -438,8 +438,55 @@ const claimEarnPosition = async (req, res) => {
   }
 };
 
+const {
+  getEarnPoolAddress,
+  readAprBps,
+  readPlatformFeeBps,
+} = require("../services/earn/earn.blockchain.service");
+
+let configCache = { at: 0, data: null };
+
+const getEarnConfig = async (req, res) => {
+  try {
+    if (configCache.data && Date.now() - configCache.at < 60_000) {
+      return res.status(200).json({ success: true, data: configCache.data });
+    }
+
+    const assets = {};
+    for (const asset of ["USDT", "USDC", "GOLD", "XAUT"]) {
+      const pool = getEarnPoolAddress(asset);
+      const [platformFeeBps, t1, t90, t180, t360] = await Promise.all([
+        readPlatformFeeBps(pool),
+        readAprBps(pool, 1),
+        readAprBps(pool, 90),
+        readAprBps(pool, 180),
+        readAprBps(pool, 360),
+      ]);
+      assets[asset] = {
+        pool,
+        platform_fee_bps: platformFeeBps,
+        terms: {
+          1: t1,
+          90: t90,
+          180: t180,
+          360: t360,
+        },
+      };
+    }
+
+    configCache = { at: Date.now(), data: assets };
+    return res.status(200).json({ success: true, data: assets });
+  } catch (error) {
+    console.error("[Earn] config error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: formatEarnError(error) });
+  }
+};
+
 module.exports = {
   getUserEarnPositions,
   recordEarnPosition,
   claimEarnPosition,
+  getEarnConfig,
 };

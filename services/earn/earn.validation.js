@@ -46,6 +46,10 @@ const parseTokenAmount = (value, decimals) => {
   );
 };
 
+// Term yang valid sesuai brief: 90D/180D/360D.
+// Term 1D (test) tetap diizinkan selama pool punya APR-nya.
+const ALLOWED_TERMS = [1, 90, 180, 360];
+
 const parseTermCode = (value) => {
   if (value === undefined || value === null || String(value).trim() === "") {
     throw new Error("term_code wajib diisi.");
@@ -57,8 +61,10 @@ const parseTermCode = (value) => {
     throw new Error("term_code harus berupa integer.");
   }
 
-  if (result < 1 || result > 255) {
-    throw new Error("term_code harus berada antara 1 sampai 255.");
+  if (!ALLOWED_TERMS.includes(result)) {
+    throw new Error(
+      `term_code ${result} tidak didukung. Pilihan: ${ALLOWED_TERMS.join("/")}.`,
+    );
   }
 
   return result;

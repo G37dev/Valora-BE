@@ -273,7 +273,7 @@ const readPoolPosition = async (poolAddress, positionId) => {
   const result = await readContract({
     contract: getPoolContract(poolAddress),
     method:
-      "function positions(uint256) view returns (uint256 principalRaw, address owner, uint64 maturityAt, uint16 aprBps, uint8 termCode, uint8 status)",
+      "function positions(uint256) view returns (uint256 principalRaw, address owner, uint64 maturityAt, uint16 aprBps, uint16 termCode, uint8 status)",
     params: [BigInt(positionId)],
   });
   return {
@@ -310,12 +310,23 @@ const readPlatformFeeBps = async (poolAddress) => {
 
 /** Baca APR on-chain untuk termCode (0 = term tidak didukung pool). */
 const readAprBps = async (poolAddress, termCode) => {
-  const result = await readContract({
-    contract: getPoolContract(poolAddress),
-    method: "function aprConfigs(uint8) view returns (uint16)",
-    params: [Number(termCode)],
-  });
-  return Number(result);
+  // Pool v2 pakai aprConfigs(uint16); legacy v1 pakai uint8 —
+  // selector beda, jadi fallback kalau versi baru revert.
+  try {
+    const result = await readContract({
+      contract: getPoolContract(poolAddress),
+      method: "function aprConfigs(uint16) view returns (uint16)",
+      params: [Number(termCode)],
+    });
+    return Number(result);
+  } catch {
+    const result = await readContract({
+      contract: getPoolContract(poolAddress),
+      method: "function aprConfigs(uint8) view returns (uint16)",
+      params: [Number(termCode)],
+    });
+    return Number(result);
+  }
 };
 
 const readTokenBalance = async ({ tokenAddress, owner }) => {

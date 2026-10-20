@@ -32,6 +32,10 @@
         {
             "path": "/api/admin/cron/chain-events-tick",
             "schedule": "*/5 * * * *"
+        },
+        {
+            "path": "/api/admin/cron/earn-treasury-tick",
+            "schedule": "0 */6 * * *"
         }
     ]
 }

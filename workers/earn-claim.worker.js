@@ -23,7 +23,11 @@ const {
   parseEarnPositionClaimed,
 } = require("../services/earn/earn.event.service");
 
-const { EARN_STATUS } = require("../services/earn/earn.constants");
+const {
+  EARN_STATUS,
+  LEGACY_EARN_POOLS,
+  LEGACY_EARN_ROUTER,
+} = require("../services/earn/earn.constants");
 
 const { waitForReceipt } = require("thirdweb");
 
@@ -132,18 +136,23 @@ const earnClaimWorker = new Worker(
       console.log("[Earn Claim Worker] Position sudah maturity.");
 
       // =====================================================
-      // 5. ROUTER
+      // 5. ROUTER — pakai router yang tersimpan di posisi
+      // (posisi lama -> legacy router, posisi baru -> env)
       // =====================================================
 
-      const routerAddress = getRouterAddress();
+      const routerAddress =
+        position.routerAddress || LEGACY_EARN_ROUTER || getRouterAddress();
 
       console.log("[Earn Claim Worker] Router:", routerAddress);
 
       // =====================================================
-      // 6. POOL
+      // 6. POOL — stored, fallback legacy map lalu env
       // =====================================================
 
-      const poolAddress = getEarnPoolAddress(position.asset);
+      const poolAddress =
+        position.poolAddress ||
+        LEGACY_EARN_POOLS[position.asset] ||
+        getEarnPoolAddress(position.asset);
 
       console.log("[Earn Claim Worker] Pool:", poolAddress);
 
@@ -294,6 +303,7 @@ const earnClaimWorker = new Worker(
         tokenAddress,
         positionId: blockchainPositionId,
         smartAccount,
+        routerAddress,
       });
 
       console.log("[Earn Claim Worker] CLAIM TX:", claimTxHash);

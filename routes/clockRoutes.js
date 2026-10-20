@@ -152,4 +152,10 @@ router.get(
   runCron("chain-events-tick", cronTicks.tickChainEvents),
 );
 
+router.get(
+  "/cron/earn-treasury-tick",
+  cronAuth,
+  runCron("earn-treasury-tick", cronTicks.tickEarnTreasury),
+);
+
 module.exports = router;

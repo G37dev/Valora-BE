@@ -3,6 +3,7 @@ const { EarnPosition, Wallet } = require("../../models");
 const {
   getAssetTokenAddress,
   getEarnPoolAddress,
+  getRouterAddress,
   getTokenDecimals,
   readAprBps,
 } = require("./earn.blockchain.service");
@@ -163,6 +164,10 @@ const createPendingEarn = async ({
     txHash: null,
 
     idempotencyKey,
+
+    poolAddress,
+
+    routerAddress: getRouterAddress(),
   });
 
   console.log("[Earn Service] DB position created:", {

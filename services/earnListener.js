@@ -9,6 +9,7 @@ const { sepolia: customSepolia } = require("../utils/chain");
 const { toTokens } = require("thirdweb/utils");
 const { Op } = require("sequelize");
 const { Wallet, Transaction } = require("../models");
+const { LEGACY_EARN_POOLS } = require("./earn/earn.constants");
 
 if (!process.env.THIRDWEB_SECRET_KEY) {
   console.error(
@@ -40,6 +41,27 @@ const getEarnPoolsToWatch = () => [
     name: "XAUT_POOL",
     asset: "XAUT",
     address: process.env.EARN_XAUT_POOL_CONTRACT_ADDRESS,
+  },
+  // Pool v1 — tetap discan karena posisi lama masih bisa claim
+  {
+    name: "USDT_POOL_V1",
+    asset: "USDT",
+    address: LEGACY_EARN_POOLS.USDT,
+  },
+  {
+    name: "USDC_POOL_V1",
+    asset: "USDC",
+    address: LEGACY_EARN_POOLS.USDC,
+  },
+  {
+    name: "GOLD_POOL_V1",
+    asset: "GOLD",
+    address: LEGACY_EARN_POOLS.GOLD,
+  },
+  {
+    name: "XAUT_POOL_V1",
+    asset: "XAUT",
+    address: LEGACY_EARN_POOLS.XAUT,
   },
 ];
 

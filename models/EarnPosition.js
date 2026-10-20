@@ -153,6 +153,21 @@ const EarnPosition = sequelize.define(
       allowNull: true,
       field: "failed_at",
     },
+
+    /*
+     * Pool & router yang dipakai saat create.
+     * NULL pada baris legacy -> fallback ke konstanta legacy.
+     */
+    poolAddress: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "pool_address",
+    },
+    routerAddress: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "router_address",
+    },
   },
 
   {
