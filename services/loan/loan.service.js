@@ -1586,18 +1586,22 @@ async function getPositionDetail({ coreId, positionId, now }) {
       };
     }
   }
+  const dump = (rows) =>
+    (rows || []).map((r) =>
+      r && typeof r.toJSON === "function" ? r.toJSON() : r,
+    );
   return toJsonSafe({
     ...base,
     available_additional_borrowing: capacity,
-    drawdowns: fresh.drawdowns,
-    repayments: fresh.repayments,
-    releases: fresh.releases,
-    interest_events: fresh.interestEvents,
+    drawdowns: dump(fresh.drawdowns),
+    repayments: dump(fresh.repayments),
+    releases: dump(fresh.releases),
+    interest_events: dump(fresh.interestEvents),
     liquidations: (fresh.liquidations || []).map((l) => ({
       ...l.toJSON(),
       signature: undefined,
     })),
-    events: fresh.events,
+    events: dump(fresh.events),
   });
 }
 
