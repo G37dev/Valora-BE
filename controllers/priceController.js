@@ -13,42 +13,39 @@ const syncTokenPrices = async (req, res) => {
       "[PRICE SYNC] Mengambil data harga dari Indodax & ShariaCoin...",
     );
 
+    const syncOne = async (asset, fetchPrice) => {
+      try {
+        const { priceIdr, source } = await fetchPrice();
+        await Price.upsert({ asset, priceIdr, source });
+        console.log(`[PRICE SYNC] ${asset} OK`);
+      } catch (err) {
+        console.error(`[PRICE SYNC] ${asset} gagal:`, err.message);
+      }
+    };
+
     // 1. USDT ke IDR dari Indodax
-    const usdtRes = await axios.get("https://indodax.com/api/usdt_idr/ticker");
-    const usdtPrice = usdtRes.data.ticker.last;
-    await Price.upsert({
-      asset: "USDT",
-      priceIdr: usdtPrice,
-      source: "INDODAX",
+    await syncOne("USDT", async () => {
+      const r = await axios.get("https://indodax.com/api/usdt_idr/ticker");
+      return { priceIdr: r.data.ticker.last, source: "INDODAX" };
     });
 
     // 2. USDC ke IDR dari Indodax
-    const usdcRes = await axios.get("https://indodax.com/api/usdc_idr/ticker");
-    const usdcPrice = usdcRes.data.ticker.last;
-    await Price.upsert({
-      asset: "USDC",
-      priceIdr: usdcPrice,
-      source: "INDODAX",
+    await syncOne("USDC", async () => {
+      const r = await axios.get("https://indodax.com/api/usdc_idr/ticker");
+      return { priceIdr: r.data.ticker.last, source: "INDODAX" };
     });
 
     // 3. XAUT (Tether Gold) ke IDR dari Indodax
-    const xautRes = await axios.get("https://indodax.com/api/xaut_idr/ticker");
-    const xautPricePerOz = parseFloat(xautRes.data.ticker.last);
-    const xautPricePerGram = xautPricePerOz / TROY_OUNCE_TO_GRAM; // Konversi ke gram
-
-    await Price.upsert({
-      asset: "XAUT",
-      priceIdr: xautPricePerGram.toFixed(2), // Dibulatkan 2 desimal
-      source: "INDODAX",
+    await syncOne("XAUT", async () => {
+      const r = await axios.get("https://indodax.com/api/xaut_idr/ticker");
+      const perGram = parseFloat(r.data.ticker.last) / TROY_OUNCE_TO_GRAM;
+      return { priceIdr: perGram.toFixed(2), source: "INDODAX" };
     });
 
     // 4. GOLD dari ShariaCoin
-    const goldRes = await axios.get("https://shariacoin.co.id/api/price");
-    const goldBuyPrice = goldRes.data.data.gold.price_buy;
-    await Price.upsert({
-      asset: "GOLD",
-      priceIdr: goldBuyPrice,
-      source: "SHARIACOIN",
+    await syncOne("GOLD", async () => {
+      const r = await axios.get("https://shariacoin.co.id/api/price");
+      return { priceIdr: r.data.data.gold.price_buy, source: "SHARIACOIN" };
     });
 
     console.log("[PRICE SYNC SUCCESS] Semua harga berhasil diperbarui.");

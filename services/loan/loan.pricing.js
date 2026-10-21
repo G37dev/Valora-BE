@@ -48,7 +48,7 @@ async function recordTickFromPriceTable(asset, { transaction } = {}) {
   // jadi atribut instance-nya adalah `updated_at`, bukan `updatedAt`.
   const observedAt = new Date(row.updated_at ?? row.updatedAt);
   const last = await LoanPriceTick.findOne({
-    where: { asset },
+    where: { asset, isOverride: false },
     order: [["observed_at", "DESC"]],
     transaction,
   });
