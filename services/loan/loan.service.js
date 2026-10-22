@@ -1452,6 +1452,7 @@ async function serializePosition(p, { now, policy, price } = {}) {
       chain_mode: bc.MODE,
     },
     is_test: p.isTest,
+    business_now: now,
     created_at: p.createdAt,
     completed_at: p.completedAt,
     closed_at: p.closedAt,
