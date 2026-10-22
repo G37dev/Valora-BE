@@ -25,7 +25,7 @@ async function sendPushToUser(coreId, { title, body, data, sound }) {
     sound: sound || "notif",
     channelId: ANDROID_CHANNEL_ID,
     priority: "high",
-    color: "#FBE678",
+    color: "#fbe678",
   }));
 
   const response = await fetch(EXPO_PUSH_URL, {

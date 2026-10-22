@@ -129,6 +129,7 @@ exports.getUserTransactions = async (req, res) => {
       if (ref.includes("INSTALLMENT") || desc.includes("INSTALLMENT"))
         return "INSTALLMENT";
       if (ref.includes("REFUND") || desc.includes("REFUND")) return "REFUND";
+      if (ref.includes("LOAN") || desc.includes("LOAN")) return "PAWN";
       return "TRANSFER";
     };
 

@@ -9,7 +9,13 @@ const { sepolia: customSepolia } = require("../utils/chain");
 const { toTokens } = require("thirdweb/utils");
 const { decimals } = require("thirdweb/extensions/erc20");
 const { Op } = require("sequelize");
-const { Wallet, Transaction, Swap } = require("../models");
+const {
+  Wallet,
+  Transaction,
+  Swap,
+  LoanCollateralRelease,
+  LoanLiquidation,
+} = require("../models");
 process.on("unhandledRejection", (reason) => {
   console.error("[RPC Error]:", reason?.message || reason);
 });
@@ -65,6 +71,25 @@ const getInstallmentPoolAddresses = () =>
     .map((token) => token.installmentPoolAddress)
     .filter(Boolean)
     .map(normalizeAddress);
+const getLoanEscrowAddresses = () =>
+  [process.env.LOAN_ESCROW_XAUT_ADDRESS, process.env.LOAN_ESCROW_GOLD_ADDRESS]
+    .filter(Boolean)
+    .map(normalizeAddress);
+const findLoanReleaseType = async (txHash) => {
+  const release = await LoanCollateralRelease.findOne({
+    where: { txHash },
+  });
+  if (release) {
+    return release.kind === "LIQUIDATION_REFUND"
+      ? "LIQUIDATION_REFUND"
+      : "COLLATERAL_RELEASE";
+  }
+  const liquidation = await LoanLiquidation.findOne({
+    where: { txHash },
+  });
+  if (liquidation) return "LIQUIDATION_REFUND";
+  return "COLLATERAL_RELEASE";
+};
 const findExistingTransaction = async (txHash) => {
   if (!txHash) return null;
   return Transaction.findOne({ where: { tx_hash: txHash } });
@@ -84,12 +109,13 @@ const createDepositTransaction = async ({
   txHash,
   blockNumber,
   tokenDecimals,
+  type = "DEPOSIT",
 }) => {
   const formattedAmount = toTokens(value, tokenDecimals);
   return Transaction.create({
     core_id: receiverWallet.core_id,
     tx_hash: txHash,
-    type: "DEPOSIT",
+    type,
     asset: token.name,
     amount: formattedAmount,
     tx_block_number: Number(blockNumber),
@@ -144,6 +170,13 @@ const handleTransferEvent = async ({ event, token }) => {
     console.log(`[Blockchain] Receiver bukan wallet user terdaftar: ${to}`);
     return;
   }
+  const loanEscrowAddresses = getLoanEscrowAddresses();
+  let txType = "DEPOSIT";
+  if (loanEscrowAddresses.includes(normalizedFrom)) {
+    // Payout dari escrow loan = collateral release / liquidation refund,
+    // bukan deposit bebas.
+    txType = await findLoanReleaseType(txHash);
+  }
   const contract = getContract({
     client,
     chain: customSepolia,
@@ -166,8 +199,9 @@ const handleTransferEvent = async ({ event, token }) => {
     txHash,
     blockNumber,
     tokenDecimals,
+    type: txType,
   });
-  console.log(`[Blockchain] DEPOSIT ${token.name} tersimpan`, {
+  console.log(`[Blockchain] ${txType} ${token.name} tersimpan`, {
     id: transaction.id,
     coreId: transaction.core_id,
     amount: transaction.amount,

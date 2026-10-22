@@ -1237,6 +1237,7 @@ async function executeRelease(releaseId, now) {
     });
     return r;
   }
+  let confirmedQty = null;
   await sequelize.transaction(async (t) => {
     const p = await lockPosition(r.positionId, null, t);
     const rr = await LoanCollateralRelease.findByPk(r.id, {
@@ -1269,7 +1270,24 @@ async function executeRelease(releaseId, now) {
       },
       t,
     );
+    confirmedQty = qty;
   });
+  if (confirmedQty) {
+    try {
+      await pushService.sendPushToUser(p0.coreId, {
+        title: "Collateral Released",
+        body: `${engine.fmtQty(confirmedQty, p0.collateralAsset)} sent to your wallet.`,
+        data: {
+          type: "loan",
+          event: "release_confirmed",
+          position_id: String(p0.id),
+          tx_hash: txHash,
+        },
+      });
+    } catch (error) {
+      console.log(`[Loan] push gagal ${p0.coreId}:`, error.message);
+    }
+  }
   return LoanCollateralRelease.findByPk(r.id);
 }
 
