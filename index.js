@@ -22,6 +22,7 @@ const {
   LoanPgAllocation,
   LoanEvent,
   LoanPriceTick,
+  LOYALTY_MODELS,
 } = require("./models");
 
 const authRoutes = require("./routes/authRoutes");
@@ -38,6 +39,7 @@ const swapRoutes = require("./routes/swapRoutes");
 const installmentRoutes = require("./routes/installmentRoutes");
 const clockRoutes = require("./routes/clockRoutes");
 const loanRoutes = require("./routes/loanRoutes");
+const loyaltyRoutes = require("./routes/loyaltyRoutes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
@@ -66,6 +68,14 @@ async function connectDatabase() {
       // karena app.listen hanya dieksekusi saat require.main === module.
       await UserPushToken.sync();
       await BusinessClock.sync();
+      // Kolom idempotency untuk dedup request withdraw (aman re-run).
+      await sequelize.query(`
+        ALTER TABLE "Transactions"
+          ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR;
+        CREATE UNIQUE INDEX IF NOT EXISTS transactions_idempotency_key_uq
+          ON "Transactions"(idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+      `);
       // Loan V1 — parent dulu baru child (FK order)
       await LoanRiskPolicyVersion.sync();
       await LoanPool.sync();
@@ -82,6 +92,8 @@ async function connectDatabase() {
       await LoanPgAllocation.sync();
       await LoanEvent.sync();
       await LoanPriceTick.sync();
+      // Loyalty & Referral Engine
+      for (const model of LOYALTY_MODELS) await model.sync();
     })();
   }
 
@@ -162,6 +174,9 @@ app.use("/api/swap", swapRoutes);
 app.use("/api/installments", installmentRoutes);
 app.use("/api/admin", clockRoutes);
 app.use("/api/loans", loanRoutes);
+app.use("/api/rewards", loyaltyRoutes.rewards);
+app.use("/api/referrals", loyaltyRoutes.referrals);
+app.use("/api/membership", loyaltyRoutes.membership);
 
 // ===============================
 // MIDTRANS REDIRECT

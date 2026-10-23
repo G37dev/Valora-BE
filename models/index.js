@@ -53,6 +53,9 @@ const LoanEvent = require("./LoanEvent");
 const LoanRiskPolicyVersion = require("./LoanRiskPolicyVersion");
 const LoanPriceTick = require("./LoanPriceTick");
 
+// Loyalty & Referral Engine (standalone module)
+const loyalty = require("./Loyalty");
+
 // ==========================================
 // Customer & User
 // ==========================================
@@ -465,4 +468,7 @@ module.exports = {
   LoanEvent,
   LoanRiskPolicyVersion,
   LoanPriceTick,
+
+  // Loyalty & Referral
+  ...loyalty,
 };

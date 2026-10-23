@@ -7,7 +7,7 @@ const {
 } = require("thirdweb");
 const { getRpcClient, eth_blockNumber } = require("thirdweb/rpc");
 const { sepolia } = require("../utils/chain");
-const { transfer } = require("thirdweb/extensions/erc20");
+const { transfer, decimals } = require("thirdweb/extensions/erc20");
 const { privateKeyAccount, smartWallet } = require("thirdweb/wallets");
 
 const client = createThirdwebClient({
@@ -27,6 +27,38 @@ const TOKEN_ADDRESSES = {
   XAUT: process.env.XAUT_DUMMY_CONTRACT_ADDRESS,
   GOLD: process.env.GOLD_DUMMY_CONTRACT_ADDRESS,
 };
+
+// Cache decimals() per kontrak — nilai immutable on-chain.
+const tokenDecimalsCache = new Map();
+async function getTokenDecimals(tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  if (!tokenDecimalsCache.has(key)) {
+    const contract = getContract({
+      client,
+      chain: sepolia,
+      address: tokenAddress,
+    });
+    const d = await decimals({ contract });
+    tokenDecimalsCache.set(key, Number(d));
+  }
+  return tokenDecimalsCache.get(key);
+}
+
+// Validasi amount string: digits+dot saja, desimal <= precision token.
+function validateAmountPrecision(amount, tokenDecimals) {
+  const str = String(amount).trim();
+  if (!/^\d+(\.\d+)?$/.test(str)) {
+    return "Format jumlah tidak valid.";
+  }
+  const fraction = str.split(".")[1] || "";
+  if (fraction.length > tokenDecimals) {
+    return `Jumlah melebihi presisi token (maks. ${tokenDecimals} angka desimal).`;
+  }
+  if (BigInt(str.replace(".", "")) === 0n) {
+    return "Jumlah harus lebih besar dari 0.";
+  }
+  return null;
+}
 
 // @desc    Ambil riwayat transaksi & hitung progress konfirmasi blok
 // @route   GET /api/transactions/:coreId
@@ -171,7 +203,8 @@ exports.requestWithdraw = async (req, res) => {
     console.log("----------------------------------------");
     console.log("📥 [STEP 0] Menerima request withdraw masuk:", req.body);
 
-    const { coreId, asset, amount, destinationAddress } = req.body;
+    const { coreId, asset, amount, destinationAddress, idempotencyKey } =
+      req.body;
 
     if (!coreId || !asset || !amount || !destinationAddress) {
       console.log("❌ [STEP 0 ERROR] Data request tidak lengkap.");
@@ -180,12 +213,73 @@ exports.requestWithdraw = async (req, res) => {
         .json({ success: false, message: "Data tidak lengkap." });
     }
 
+    // Ownership: token JWT harus milik coreId yang sama — cegah IDOR
+    // (withdraw atas nama user lain).
+    if (
+      !req.user ||
+      req.user.coreId !== coreId ||
+      req.user.scope === "pre_auth"
+    ) {
+      console.log(`❌ [STEP 0 ERROR] coreId mismatch vs token.`);
+      return res.status(403).json({
+        success: false,
+        message: "Tidak berhak melakukan withdraw untuk akun ini.",
+      });
+    }
+
+    const trimmedDest = String(destinationAddress).trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(trimmedDest)) {
+      return res.status(400).json({
+        success: false,
+        message: "Format alamat tujuan tidak valid.",
+      });
+    }
+
     const tokenAddress = TOKEN_ADDRESSES[asset.toUpperCase()];
     if (!tokenAddress) {
       console.log(`❌ [STEP 0 ERROR] Aset ${asset} tidak didukung.`);
       return res
         .status(400)
         .json({ success: false, message: `Aset ${asset} tidak didukung.` });
+    }
+
+    // Presisi: tolak amount dengan desimal melebihi decimals() token —
+    // sebelumnya nilai seperti 100.0000001 lolos dan ke-truncate on-chain.
+    const cleanAmount = String(amount).trim();
+    const tokenDecimals = await getTokenDecimals(tokenAddress);
+    const precisionError = validateAmountPrecision(cleanAmount, tokenDecimals);
+    if (precisionError) {
+      return res.status(400).json({ success: false, message: precisionError });
+    }
+
+    // Idempotency: retry dengan key yang sama mengembalikan hasil
+    // yang sudah ada, tanpa broadcast ulang.
+    if (idempotencyKey) {
+      const existing = await Transaction.findOne({
+        where: { core_id: coreId, idempotency_key: String(idempotencyKey) },
+      });
+      if (existing) {
+        console.log(
+          `♻️ [IDEMPOTENT] Request withdraw duplikat (key ${idempotencyKey}), kembalikan tx ${existing.id} status ${existing.status}.`,
+        );
+        return res.status(200).json({
+          success: true,
+          idempotentReplay: true,
+          message:
+            existing.status === "FAILED"
+              ? "Withdraw sebelumnya gagal."
+              : "Withdraw sudah diproses sebelumnya.",
+          data: {
+            txHash: existing.tx_hash.startsWith("PENDING_")
+              ? null
+              : existing.tx_hash,
+            status: existing.status,
+            asset: existing.asset,
+            amount: existing.amount,
+            destinationAddress: trimmedDest,
+          },
+        });
+      }
     }
 
     console.log(`✅ [STEP 1] Token Address untuk ${asset}: ${tokenAddress}`);
@@ -202,6 +296,15 @@ exports.requestWithdraw = async (req, res) => {
       });
     }
 
+    // Self-send: tujuan == smart wallet sendiri tidak masuk akal untuk withdraw.
+    if (trimmedDest.toLowerCase() === userWallet.address.toLowerCase()) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Alamat tujuan sama dengan wallet pengirim. Gunakan alamat lain.",
+      });
+    }
+
     console.log(
       `✅ [STEP 2] Smart Wallet user ditemukan: ${userWallet.address}`,
     );
@@ -212,8 +315,9 @@ exports.requestWithdraw = async (req, res) => {
       tx_hash: "PENDING_" + Date.now(),
       type: "WITHDRAW",
       asset: asset.toUpperCase(),
-      amount: amount,
+      amount: cleanAmount,
       status: "PENDING",
+      idempotency_key: idempotencyKey ? String(idempotencyKey) : null,
     });
 
     console.log(
@@ -241,8 +345,8 @@ exports.requestWithdraw = async (req, res) => {
       // Siapkan parameter transfer token
       const tx = transfer({
         contract,
-        to: destinationAddress,
-        amount: amount.toString(),
+        to: trimmedDest,
+        amount: cleanAmount,
       });
       console.log("✅ [STEP B] Payload transfer ERC-20 berhasil disiapkan.");
 
@@ -306,8 +410,8 @@ exports.requestWithdraw = async (req, res) => {
         data: {
           txHash: realTxHash,
           asset: asset.toUpperCase(),
-          amount,
-          destinationAddress,
+          amount: cleanAmount,
+          destinationAddress: trimmedDest,
         },
       });
     } catch (bgError) {

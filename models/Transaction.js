@@ -32,6 +32,13 @@ const Transaction = sequelize.define("Transaction", {
     type: DataTypes.STRING,
     defaultValue: "PENDING", // PENDING, SUCCESS, FAILED
   },
+  // Idempotency key client-supplied untuk dedup retry withdraw
+  // (kolom dibuat via ALTER TABLE IF NOT EXISTS di index.js).
+  idempotency_key: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    field: "idempotency_key",
+  },
 });
 
 module.exports = Transaction;

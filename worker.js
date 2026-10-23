@@ -8,6 +8,9 @@ const {
   startInstallmentScheduler,
 } = require("./services/installment/installment.scheduler");
 const { startLoanScheduler } = require("./services/loan/loan.scheduler");
+const {
+  startLoyaltyScheduler,
+} = require("./services/loyalty/loyalty.scheduler");
 
 require("./workers/earn.worker");
 require("./workers/earn-claim.worker");
@@ -27,6 +30,7 @@ async function startWorker() {
     startEarnListener();
     startInstallmentScheduler();
     startLoanScheduler();
+    startLoyaltyScheduler();
 
     console.log("Blockchain listener started.");
     console.log("Earn listener started.");

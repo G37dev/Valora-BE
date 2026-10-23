@@ -39,6 +39,10 @@
         {
             "path": "/api/admin/cron/earn-treasury-tick",
             "schedule": "0 */6 * * *"
+        },
+        {
+            "path": "/api/rewards/cron/loyalty-tick",
+            "schedule": "*/5 * * * *"
         }
     ]
 }

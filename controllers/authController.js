@@ -7,6 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const {
   normalizePhone: normalizeWaPhone,
 } = require("../services/waOtpService");
+const loyaltyReferral = require("../services/loyalty/loyalty.referral");
 
 const {
   Customer,
@@ -194,6 +195,8 @@ async function handle2FACheck(coreId, tenantId, res) {
 exports.register = async (req, res) => {
   try {
     const { firstName, lastName, password, phoneNumber, otpTicket } = req.body;
+    const referralCode =
+      req.body.referralCode || req.body.referral_code || null;
     const email = normalizeEmail(req.body.email);
 
     if (!email || !password) {
@@ -289,12 +292,33 @@ exports.register = async (req, res) => {
         { transaction: t },
       );
 
-      return coreId;
+      // Loyalty: bind kode referral (A -> B) dalam transaction yang sama.
+      // Kode invalid -> registrasi tetap sukses, referral di-skip (dilaporkan).
+      let referralBound = false;
+      if (referralCode) {
+        try {
+          await loyaltyReferral.bind({
+            refereeCoreId: coreId,
+            code: referralCode,
+            transaction: t,
+            source: "SIGNUP",
+          });
+          referralBound = true;
+        } catch (referralError) {
+          console.warn(
+            "[Register] referral bind skipped:",
+            referralError.message,
+          );
+        }
+      }
+
+      return { coreId, referralBound };
     });
 
     res.status(201).json({
       message: "Registrasi berhasil! Silakan login untuk melanjutkan.",
-      coreId: result,
+      coreId: result.coreId,
+      referralBound: result.referralBound,
     });
   } catch (error) {
     console.error("Register error:", error);
@@ -424,6 +448,20 @@ exports.loginWithGoogle = async (req, res) => {
             },
             { transaction: t },
           );
+          const referralCode =
+            req.body?.referralCode || req.body?.referral_code;
+          if (referralCode) {
+            await loyaltyReferral
+              .bind({
+                refereeCoreId: coreId,
+                code: referralCode,
+                transaction: t,
+                source: "SIGNUP",
+              })
+              .catch((e) =>
+                console.warn("[GoogleLogin] referral bind skipped:", e.message),
+              );
+          }
         }
       });
     } else {
