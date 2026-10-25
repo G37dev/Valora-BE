@@ -5,7 +5,8 @@ const {
   getContract,
   sendTransaction,
 } = require("thirdweb");
-const { getRpcClient, eth_blockNumber } = require("thirdweb/rpc");
+const { getRpcClient } = require("thirdweb/rpc");
+const { cachedBlockNumber } = require("../services/rpcCache");
 const { sepolia } = require("../utils/chain");
 const { transfer, decimals } = require("thirdweb/extensions/erc20");
 const { privateKeyAccount, smartWallet } = require("thirdweb/wallets");
@@ -79,8 +80,7 @@ exports.getUserTransactions = async (req, res) => {
     let currentBlock = 0;
     try {
       const rpcRequest = getRpcClient({ client, chain: sepolia });
-      const blockNumBigInt = await eth_blockNumber(rpcRequest);
-      currentBlock = Number(blockNumBigInt);
+      currentBlock = await cachedBlockNumber(rpcRequest);
     } catch (err) {
       console.error("Gagal mengambil blok terbaru dari RPC:", err.message);
     }
@@ -116,6 +116,7 @@ exports.getUserTransactions = async (req, res) => {
           confirmations: confirmations,
           requiredConfirmations: REQUIRED_CONFIRMATIONS,
           createdAt: tx.createdAt,
+          destination: tx.destination_address || null,
         };
       }),
     );
@@ -318,6 +319,7 @@ exports.requestWithdraw = async (req, res) => {
       amount: cleanAmount,
       status: "PENDING",
       idempotency_key: idempotencyKey ? String(idempotencyKey) : null,
+      destination_address: trimmedDest,
     });
 
     console.log(
@@ -391,8 +393,7 @@ exports.requestWithdraw = async (req, res) => {
       );
 
       const rpcRequest = getRpcClient({ client, chain: sepolia });
-      const blockNumBigInt = await eth_blockNumber(rpcRequest);
-      const currentBlockNumber = Number(blockNumBigInt);
+      const currentBlockNumber = await cachedBlockNumber(rpcRequest);
       console.log(`✅ [STEP F] Block Number saat ini: ${currentBlockNumber}`);
 
       // Update database dengan Hash asli dari blockchain

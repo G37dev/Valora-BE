@@ -56,7 +56,10 @@ function metrics(pool, policy) {
   const target = dec(pool.protectedReserveTargetIdr);
   const cash = dec(pool.confirmedCashIdr);
   const restricted = dec(pool.restrictedAllocationIdr);
-  const utilizationCap = calc.utilizationCap(capital, rules.MAX_POOL_UTILIZATION_BPS);
+  const utilizationCap = calc.utilizationCap(
+    capital,
+    rules.MAX_POOL_UTILIZATION_BPS,
+  );
   const utilizationHeadroom = clamp0(utilizationCap.minus(onloan));
   const availableCash = clamp0(cash.minus(restricted));
   const committed = capital.plus(reserve);
@@ -102,7 +105,11 @@ async function snapshot(pool, reason, { positionId, now, transaction }) {
 
 /** Jumlah posisi yang dihitung untuk limit 2 / customer. */
 async function countActivePositions(coreId, { transaction, excludeId } = {}) {
-  const where = { coreId, status: { [Op.in]: COUNTED_STATUSES } };
+  const where = {
+    coreId,
+    status: { [Op.in]: COUNTED_STATUSES },
+    isTest: false,
+  };
   if (excludeId) where.id = { [Op.ne]: excludeId };
   return LoanPosition.count({ where, transaction });
 }
@@ -111,7 +118,11 @@ async function countActivePositions(coreId, { transaction, excludeId } = {}) {
 async function aggregatePrincipal(coreId, { transaction } = {}) {
   const rows = await LoanPosition.findAll({
     attributes: ["principalOutstandingIdr"],
-    where: { coreId, status: { [Op.in]: OPEN_STATUSES } },
+    where: {
+      coreId,
+      status: { [Op.in]: OPEN_STATUSES },
+      isTest: false,
+    },
     transaction,
   });
   return rows.reduce((s, r) => s.plus(dec(r.principalOutstandingIdr)), dec(0));
@@ -128,14 +139,19 @@ async function getOrOpenCycle(coreId, pool, policy, { now, transaction }) {
     lock: transaction?.LOCK?.UPDATE,
   });
   if (cycle) return { cycle, created: false };
-  const snap = await snapshot(pool, "BORROWER_CYCLE_OPEN", { now, transaction });
+  const snap = await snapshot(pool, "BORROWER_CYCLE_OPEN", {
+    now,
+    transaction,
+  });
   const capital = dec(pool.eligibleLendingCapitalIdr);
   cycle = await LoanBorrowerCycle.create(
     {
       coreId,
       poolSnapshotId: snap.id,
       eligibleCapitalAtFirstLoanIdr: capital.toFixed(18),
-      borrowerCapIdr: calc.borrowerCap(capital, policy.rules.BORROWER_CAP_BPS).toFixed(18),
+      borrowerCapIdr: calc
+        .borrowerCap(capital, policy.rules.BORROWER_CAP_BPS)
+        .toFixed(18),
       cycleStartedAt: now,
       status: "OPEN",
     },
@@ -158,24 +174,33 @@ async function closeCycleIfIdle(coreId, { now, transaction }) {
 /** Headroom customer = cap siklus - aggregate PO. */
 async function customerHeadroom(coreId, cycle, { transaction }) {
   const agg = await aggregatePrincipal(coreId, { transaction });
-  return { cap: dec(cycle.borrowerCapIdr), aggregatePo: agg, headroom: clamp0(dec(cycle.borrowerCapIdr).minus(agg)) };
+  return {
+    cap: dec(cycle.borrowerCapIdr),
+    aggregatePo: agg,
+    headroom: clamp0(dec(cycle.borrowerCapIdr).minus(agg)),
+  };
 }
 
 /** Reservasi cash + utilisasi untuk disbursement baru (semua limit serentak). */
 function assertPoolCanLend(pool, policy, grossIdr) {
   const m = metrics(pool, policy);
   if (m.lending_paused) {
-    throw new LoanError(`Lending paused: ${m.pause_reason || "treasury hold"}`, {
-      status: 503,
-      code: "LENDING_PAUSED",
-    });
+    throw new LoanError(
+      `Lending paused: ${m.pause_reason || "treasury hold"}`,
+      {
+        status: 503,
+        code: "LENDING_PAUSED",
+      },
+    );
   }
   const g = dec(grossIdr);
   if (g.gt(m.utilization_headroom_idr)) {
     throw new LoanError("Pool utilization headroom insufficient", {
       status: 409,
       code: "POOL_UTILIZATION_EXCEEDED",
-      details: { utilization_headroom_idr: m.utilization_headroom_idr.toFixed(0) },
+      details: {
+        utilization_headroom_idr: m.utilization_headroom_idr.toFixed(0),
+      },
     });
   }
   if (g.gt(m.free_cash_idr)) {
@@ -192,7 +217,9 @@ function assertPoolCanLend(pool, policy, grossIdr) {
 async function applyDisbursement(pool, grossIdr, netIdr, { transaction }) {
   await pool.update(
     {
-      onloanPrincipalIdr: dec(pool.onloanPrincipalIdr).plus(grossIdr).toFixed(18),
+      onloanPrincipalIdr: dec(pool.onloanPrincipalIdr)
+        .plus(grossIdr)
+        .toFixed(18),
       confirmedCashIdr: dec(pool.confirmedCashIdr).minus(netIdr).toFixed(18),
     },
     { transaction },
@@ -203,7 +230,9 @@ async function applyDisbursement(pool, grossIdr, netIdr, { transaction }) {
 async function applyRepayment(pool, principalIdr, cashInIdr, { transaction }) {
   await pool.update(
     {
-      onloanPrincipalIdr: clamp0(dec(pool.onloanPrincipalIdr).minus(principalIdr)).toFixed(18),
+      onloanPrincipalIdr: clamp0(
+        dec(pool.onloanPrincipalIdr).minus(principalIdr),
+      ).toFixed(18),
       confirmedCashIdr: dec(pool.confirmedCashIdr).plus(cashInIdr).toFixed(18),
     },
     { transaction },
@@ -214,16 +243,26 @@ async function applyRepayment(pool, principalIdr, cashInIdr, { transaction }) {
  * Settlement advance saat liquidation (brief 14/16): perusahaan menutup
  * pool dengan IDR advance sebesar TDD; shortfall (deficit) ditutup reserve.
  */
-async function applyLiquidationAdvance(pool, { principalIdr, totalDebtDueIdr, deficitIdr }, { transaction }) {
+async function applyLiquidationAdvance(
+  pool,
+  { principalIdr, totalDebtDueIdr, deficitIdr },
+  { transaction },
+) {
   const reserve = dec(pool.protectedReserveIdr);
   const deficit = dec(deficitIdr);
   const reserveUsed = minDec(reserve, deficit);
   await pool.update(
     {
-      onloanPrincipalIdr: clamp0(dec(pool.onloanPrincipalIdr).minus(principalIdr)).toFixed(18),
+      onloanPrincipalIdr: clamp0(
+        dec(pool.onloanPrincipalIdr).minus(principalIdr),
+      ).toFixed(18),
       // Advance IDR mereplenish pool; kas dianggap masuk sebesar TDD (perusahaan prefund)
-      confirmedCashIdr: dec(pool.confirmedCashIdr).plus(totalDebtDueIdr).toFixed(18),
-      outstandingAdvanceIdr: dec(pool.outstandingAdvanceIdr).plus(totalDebtDueIdr).toFixed(18),
+      confirmedCashIdr: dec(pool.confirmedCashIdr)
+        .plus(totalDebtDueIdr)
+        .toFixed(18),
+      outstandingAdvanceIdr: dec(pool.outstandingAdvanceIdr)
+        .plus(totalDebtDueIdr)
+        .toFixed(18),
       protectedReserveIdr: reserve.minus(reserveUsed).toFixed(18),
     },
     { transaction },
@@ -244,7 +283,11 @@ async function applyTreasuryProceeds(pool, netProceedsIdr, { transaction }) {
 
 async function injectReserve(pool, amountIdr, { transaction }) {
   await pool.update(
-    { protectedReserveIdr: dec(pool.protectedReserveIdr).plus(amountIdr).toFixed(18) },
+    {
+      protectedReserveIdr: dec(pool.protectedReserveIdr)
+        .plus(amountIdr)
+        .toFixed(18),
+    },
     { transaction },
   );
 }

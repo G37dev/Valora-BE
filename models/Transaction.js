@@ -39,6 +39,12 @@ const Transaction = sequelize.define("Transaction", {
     allowNull: true,
     field: "idempotency_key",
   },
+  // Alamat tujuan withdraw (kolom dibuat via ALTER TABLE IF NOT EXISTS di index.js).
+  destination_address: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    field: "destination_address",
+  },
 });
 
 module.exports = Transaction;

@@ -1,7 +1,41 @@
 const axios = require("axios");
-const { Price } = require("../models");
+const { Op } = require("sequelize");
+const { Price, LoanPriceTick } = require("../models");
 
 const TROY_OUNCE_TO_GRAM = 31.1034768;
+
+// Cache ringan agar hitung change24h tidak query DB per request.
+const CHANGE_24H_CACHE_TTL_MS = 60 * 1000;
+const change24hCache = new Map();
+
+async function getChange24hPct(asset) {
+  const cached = change24hCache.get(asset);
+  if (cached && Date.now() - cached.at < CHANGE_24H_CACHE_TTL_MS) {
+    return cached.pct;
+  }
+  const now = new Date();
+  const baselineCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const [latest, baseline] = await Promise.all([
+    LoanPriceTick.findOne({
+      where: { asset, isOverride: false, observedAt: { [Op.lte]: now } },
+      order: [["observed_at", "DESC"]],
+    }),
+    LoanPriceTick.findOne({
+      where: {
+        asset,
+        isOverride: false,
+        observedAt: { [Op.lte]: baselineCutoff },
+      },
+      order: [["observed_at", "DESC"]],
+    }),
+  ]);
+  let pct = 0;
+  if (latest && baseline && Number(baseline.priceIdr) > 0) {
+    pct = (Number(latest.priceIdr) / Number(baseline.priceIdr) - 1) * 100;
+  }
+  change24hCache.set(asset, { pct, at: Date.now() });
+  return pct;
+}
 
 /**
  * @desc    Sinkronisasi harga terbaru dari Indodax & ShariaCoin ke Database
@@ -17,6 +51,19 @@ const syncTokenPrices = async (req, res) => {
       try {
         const { priceIdr, source } = await fetchPrice();
         await Price.upsert({ asset, priceIdr, source });
+        // Tick hanya untuk stablecoin — GOLD/XAUT sudah di-tick
+        // loan.scheduler dalam satuan per-token (XAUT per toz),
+        // menulis per-gram di sini akan merusak series.
+        if (asset === "USDT" || asset === "USDC") {
+          await LoanPriceTick.create({
+            asset,
+            priceIdr,
+            source,
+            observedAt: new Date(),
+            fetchedAt: new Date(),
+          });
+          change24hCache.delete(asset);
+        }
         console.log(`[PRICE SYNC] ${asset} OK`);
       } catch (err) {
         console.error(`[PRICE SYNC] ${asset} gagal:`, err.message);
@@ -78,9 +125,20 @@ const syncTokenPrices = async (req, res) => {
 const getCachedPrices = async (req, res) => {
   try {
     const prices = await Price.findAll();
+    const data = await Promise.all(
+      prices.map(async (p) => {
+        const row = p.toJSON ? p.toJSON() : p;
+        try {
+          row.change24h_pct = await getChange24hPct(p.asset);
+        } catch {
+          row.change24h_pct = 0;
+        }
+        return row;
+      }),
+    );
     return res.status(200).json({
       success: true,
-      data: prices,
+      data,
     });
   } catch (error) {
     console.error("Gagal mengambil data harga:", error);

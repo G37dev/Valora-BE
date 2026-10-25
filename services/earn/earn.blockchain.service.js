@@ -10,6 +10,7 @@ const {
 const { sepolia } = require("../../utils/chain");
 
 const { isValidAddress, normalizeAsset } = require("./earn.validation");
+const { cachedDecimals } = require("../rpcCache");
 
 const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY,
@@ -118,14 +119,7 @@ const getRouterContract = () => {
 
 const getTokenDecimals = async (tokenAddress) => {
   const contract = getTokenContract(tokenAddress);
-
-  const decimals = await readContract({
-    contract,
-    method: "function decimals() view returns (uint8)",
-    params: [],
-  });
-
-  return Number(decimals);
+  return cachedDecimals(contract, readContract);
 };
 
 const getTokenAllowance = async ({ tokenAddress, owner, spender }) => {
