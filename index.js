@@ -72,6 +72,8 @@ async function connectDatabase() {
       await sequelize.query(`
         ALTER TABLE "Transactions"
           ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR;
+        ALTER TABLE "Transactions"
+          ADD COLUMN IF NOT EXISTS destination_address VARCHAR;
         CREATE UNIQUE INDEX IF NOT EXISTS transactions_idempotency_key_uq
           ON "Transactions"(idempotency_key)
           WHERE idempotency_key IS NOT NULL;
@@ -136,6 +138,56 @@ app.get("/.well-known/assetlinks.json", (req, res) => {
       },
     })),
   );
+});
+
+// ===============================
+// REFERRAL LANDING — GET /r/:code
+// Public page: opens the app via deep link, falls back to a
+// code + store prompt when the app is not installed.
+// ===============================
+app.get("/r/:code", (req, res) => {
+  const code = String(req.params.code || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 16)
+    .toUpperCase();
+  const deepLink = `valoramobile://invite/${code}`;
+  const playStore =
+    "https://play.google.com/store/apps/details?id=com.valora.valoramobile";
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>You're invited to VIVALORA</title>
+<style>
+  body{margin:0;background:#050505;color:#FFF;font-family:-apple-system,Segoe UI,Roboto,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}
+  .card{text-align:center;padding:32px 24px;max-width:420px;width:100%}
+  .brand{letter-spacing:6px;color:#FBE678;font-weight:700;font-size:14px}
+  h1{font-size:22px;margin:18px 0 8px}
+  p{color:#9A9A9A;font-size:14px;line-height:1.6}
+  .code{display:inline-block;margin:18px 0;padding:12px 24px;border:1px dashed #FBE678;border-radius:12px;font-size:22px;letter-spacing:3px;color:#FBE678;font-weight:700}
+  .btn{display:block;margin:14px auto;padding:15px 22px;border-radius:14px;background:linear-gradient(135deg,#FBE87C,#F0C32D);color:#000;font-weight:700;text-decoration:none;font-size:15px;max-width:300px}
+  .btn.secondary{background:#1E1E1E;color:#FFF;border:1px solid #333}
+  .hint{font-size:12px;color:#666;margin-top:22px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">VIVALORA</div>
+  <h1>You're invited!</h1>
+  <p>Your friend invited you to VIVALORA. Open the app to apply the referral code automatically:</p>
+  <div class="code">${code}</div>
+  <a class="btn" href="${deepLink}">Open VIVALORA App</a>
+  <a class="btn secondary" href="${playStore}">Get the App (Android)</a>
+  <p class="hint">If the app doesn't open, install it first, then come back — or enter the code <b>${code}</b> at sign-up.</p>
+</div>
+<script>
+  // Try the deep link automatically; if the app isn't installed the
+  // page simply stays visible with the fallback buttons.
+  setTimeout(function(){ window.location.href = ${JSON.stringify(deepLink)}; }, 300);
+</script>
+</body>
+</html>`);
 });
 
 // ===============================

@@ -160,7 +160,7 @@ async function summary(coreId, { now = new Date() } = {}) {
 
   return toJsonSafe({
     code: codeRow.code,
-    share_link: `${process.env.REFERRAL_LINK_BASE || "https://vivalora.app/r"}/${codeRow.code}`,
+    share_link: `${process.env.REFERRAL_LINK_BASE || "https://valora-be.vercel.app/r"}/${codeRow.code}`,
     program: {
       deposit_rate_bps: config.referral.deposit_rate_bps,
       deposit_cap_idr: config.referral.deposit_cap_idr,
