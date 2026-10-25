@@ -1,0 +1,24 @@
+name: Cron All-Tick
+
+# Scheduler eksternal untuk /api/admin/cron/all-tick — pengganti
+# Vercel Cron di plan Hobby (limit 2 cron, max 1x/hari).
+# Butuh repo secret CRON_SECRET (sama seperti env backend).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # tombol manual di tab Actions
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit all-tick
+        run: |
+          code=$(curl -sS -o resp.json -w "%{http_code}" \
+            -m 50 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://valora-be.vercel.app/api/admin/cron/all-tick")
+          cat resp.json
+          echo "HTTP $code"
+          test "$code" = "200" || test "$code" = "207" || exit 1
