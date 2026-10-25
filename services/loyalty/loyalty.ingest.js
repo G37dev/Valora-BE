@@ -73,7 +73,7 @@ async function pollTopups(now) {
   const key = "loyalty:cursor:topups";
   const since = new Date((await readCursor(key)).getTime() - OVERLAP_MS);
   const rows = await TopUp.findAll({
-    where: { status: "SUCCESS", updatedAt: { [Op.gte]: since } },
+    where: { status: "SUCCESS", updated_at: { [Op.gte]: since } },
     order: [["updated_at", "ASC"]],
     limit: BATCH,
   });
@@ -82,7 +82,7 @@ async function pollTopups(now) {
     source_event_id: `topup:${r.id}`,
     event_type: EVENT.DEPOSIT_CONFIRMED,
     core_id: r.coreId,
-    occurred_at: r.paidAt || r.updatedAt,
+    occurred_at: r.paidAt || r.updated_at,
     asset: "IDR",
     amount: toDecStr(r.amountIdr),
     source_transaction_id: String(r.id),
@@ -90,7 +90,7 @@ async function pollTopups(now) {
   }));
   const out = await run("topups", envs);
   if (rows.length)
-    await writeCursor(key, new Date(rows[rows.length - 1].updatedAt));
+    await writeCursor(key, new Date(rows[rows.length - 1].updated_at));
   else await writeCursor(key, now);
   return out;
 }
@@ -134,7 +134,7 @@ async function pollEarn(now) {
   const rows = await EarnPosition.findAll({
     where: {
       status: { [Op.in]: ["ACTIVE", "CLAIMING", "CLAIMED"] },
-      updatedAt: { [Op.gte]: since },
+      updated_at: { [Op.gte]: since },
     },
     order: [["updated_at", "ASC"]],
     limit: BATCH,
@@ -143,7 +143,7 @@ async function pollEarn(now) {
   for (const e of rows) {
     const amount = pricing.fromRaw(e.principal, EARN_TOKEN_DECIMALS);
     const openedAt =
-      e.completedAt && e.status === "ACTIVE" ? e.completedAt : e.createdAt;
+      e.completedAt && e.status === "ACTIVE" ? e.completedAt : e.created_at;
     const v = await pricing.valueIdr(e.asset, amount, {
       now: new Date(openedAt),
       config,
@@ -177,7 +177,7 @@ async function pollEarn(now) {
         source_event_id: `earn:${e.id}:settled`,
         event_type: EVENT.POSITION_SETTLED,
         core_id: e.coreId,
-        occurred_at: e.completedAt || e.updatedAt,
+        occurred_at: e.completedAt || e.updated_at,
         feature: FEATURE.EARN,
         position_ref: `earn:${e.id}`,
         source_transaction_id: e.txHash || String(e.id),
@@ -186,7 +186,7 @@ async function pollEarn(now) {
   }
   const out = await run("earn", envs);
   if (rows.length)
-    await writeCursor(key, new Date(rows[rows.length - 1].updatedAt));
+    await writeCursor(key, new Date(rows[rows.length - 1].updated_at));
   else await writeCursor(key, now);
   return out;
 }
@@ -206,7 +206,7 @@ async function pollLoan(now) {
   const rows = await LoanEvent.findAll({
     where: {
       eventType: { [Op.in]: Object.keys(LOAN_MAP) },
-      createdAt: { [Op.gte]: since },
+      created_at: { [Op.gte]: since },
     },
     order: [["created_at", "ASC"]],
     limit: BATCH,
@@ -274,7 +274,7 @@ async function pollLoan(now) {
     .filter(Boolean);
   const out = await run("loan", envs);
   if (rows.length)
-    await writeCursor(key, new Date(rows[rows.length - 1].createdAt));
+    await writeCursor(key, new Date(rows[rows.length - 1].created_at));
   else await writeCursor(key, now);
   return out;
 }
@@ -295,7 +295,7 @@ async function pollInstallment(now) {
   const rows = await InstallmentEvent.findAll({
     where: {
       eventType: { [Op.in]: Object.keys(INST_MAP) },
-      createdAt: { [Op.gte]: since },
+      created_at: { [Op.gte]: since },
     },
     order: [["created_at", "ASC"]],
     limit: BATCH,
@@ -364,7 +364,7 @@ async function pollInstallment(now) {
     .filter(Boolean);
   const out = await run("installment", envs);
   if (rows.length)
-    await writeCursor(key, new Date(rows[rows.length - 1].createdAt));
+    await writeCursor(key, new Date(rows[rows.length - 1].created_at));
   else await writeCursor(key, now);
   return out;
 }
@@ -375,7 +375,10 @@ async function pollSwap(now) {
   const key = "loyalty:cursor:swap";
   const since = new Date((await readCursor(key)).getTime() - OVERLAP_MS);
   const rows = await Swap.findAll({
-    where: { status: "SUCCESS", updatedAt: { [Op.gte]: since } },
+    where: {
+      status: { [Op.in]: ["SUCCESS", "COMPLETED"] },
+      updated_at: { [Op.gte]: since },
+    },
     order: [["updated_at", "ASC"]],
     limit: BATCH,
   });
@@ -384,7 +387,7 @@ async function pollSwap(now) {
     source_event_id: `swap:${s.id}`,
     event_type: EVENT.SWAP_SETTLED,
     core_id: s.coreId,
-    occurred_at: s.completedAt || s.updatedAt,
+    occurred_at: s.completedAt || s.updated_at,
     feature: FEATURE.SWAP,
     source_transaction_id: String(s.id),
     position_ref: `swap:${s.id}`,
@@ -400,7 +403,7 @@ async function pollSwap(now) {
   }));
   const out = await run("swap", envs);
   if (rows.length)
-    await writeCursor(key, new Date(rows[rows.length - 1].updatedAt));
+    await writeCursor(key, new Date(rows[rows.length - 1].updated_at));
   else await writeCursor(key, now);
   return out;
 }
@@ -416,7 +419,7 @@ async function retryFailed(now) {
   // Envelope disimpan di result.envelope saat gagal -> replay langsung.
   let n = 0;
   for (const r of rows) {
-    const age = now.getTime() - new Date(r.updatedAt).getTime();
+    const age = now.getTime() - new Date(r.updated_at).getTime();
     if (age < 60_000) continue;
     const env = r.result?.envelope;
     if (!env || r.result?.retryable === false) continue;
