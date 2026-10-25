@@ -17,32 +17,8 @@
     ],
     "crons": [
         {
-            "path": "/api/admin/cron/installment-tick",
-            "schedule": "*/5 * * * *"
-        },
-        {
-            "path": "/api/admin/cron/loan-tick",
-            "schedule": "*/5 * * * *"
-        },
-        {
-            "path": "/api/admin/cron/price-tick",
-            "schedule": "*/5 * * * *"
-        },
-        {
-            "path": "/api/admin/cron/queue-drain",
-            "schedule": "*/5 * * * *"
-        },
-        {
-            "path": "/api/admin/cron/chain-events-tick",
-            "schedule": "*/5 * * * *"
-        },
-        {
-            "path": "/api/admin/cron/earn-treasury-tick",
-            "schedule": "0 */6 * * *"
-        },
-        {
-            "path": "/api/rewards/cron/loyalty-tick",
-            "schedule": "*/5 * * * *"
+            "path": "/api/admin/cron/all-tick",
+            "schedule": "0 0 * * *"
         }
     ]
 }

@@ -158,4 +158,64 @@ router.get(
   runCron("earn-treasury-tick", cronTicks.tickEarnTreasury),
 );
 
+/*
+ * Konsolidasi semua tick dalam satu endpoint — untuk scheduler
+ * eksternal (cron-job.org/GitHub Actions) karena Vercel Hobby
+ * hanya mengizinkan 2 cron @ max 1x/hari.
+ *
+ * Producer tick jalan paralel, loyalty terakhir supaya ingest-nya
+ * melihat event segar dari tick lain. Per-tick error tidak fatal —
+ * dikumpulkan di report. Semua tick idempotent (cursor/dedup),
+ * aman dipanggil ulang kapan pun.
+ */
+router.get(
+  "/cron/all-tick",
+  cronAuth,
+  async (req, res) => {
+    const report = {};
+    const producers = {
+      "price-tick": cronTicks.tickPrice,
+      "loan-tick": cronTicks.tickLoan,
+      "installment-tick": async () => {
+        const now = await businessClock.current();
+        const { tick } = require("../services/installment/installment.scheduler");
+        return { effective_at: now, ...(await tick(now)) };
+      },
+      "queue-drain": cronTicks.drainAllQueues,
+      "chain-events-tick": cronTicks.tickChainEvents,
+      "earn-treasury-tick": cronTicks.tickEarnTreasury,
+    };
+
+    await Promise.all(
+      Object.entries(producers).map(async ([label, fn]) => {
+        try {
+          report[label] = { success: true, data: await fn() };
+        } catch (error) {
+          report[label] = { success: false, message: error.message };
+        }
+      }),
+    );
+
+    try {
+      const loyaltyScheduler = require("../services/loyalty/loyalty.scheduler");
+      const now = await businessClock.current();
+      report["loyalty-tick"] = {
+        success: true,
+        data: await loyaltyScheduler.tick(now),
+      };
+    } catch (error) {
+      report["loyalty-tick"] = { success: false, message: error.message };
+    }
+
+    const failed = Object.entries(report)
+      .filter(([, r]) => !r.success)
+      .map(([label]) => label);
+    return res.status(failed.length === Object.keys(report).length ? 500 : 200).json({
+      success: failed.length === 0,
+      failed,
+      report,
+    });
+  },
+);
+
 module.exports = router;
