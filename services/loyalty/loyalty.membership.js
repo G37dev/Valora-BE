@@ -316,6 +316,7 @@ async function status(coreId, { now } = {}) {
     full_history: fullHistory,
     history_days: Math.min(30, daysOfHistory),
     history_days_required: 30,
+    history_start: historyStart,
     window_start: windowStart,
     samples,
     next_tier: next
