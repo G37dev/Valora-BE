@@ -275,110 +275,121 @@ async function tickEarnTreasury() {
   const report = {};
   const now = Date.now();
 
+  // Semua pool diproses paralel — sebelumnya sekuensial per asset×pool
+  // (~8×4 call RPC serial) dan saat RPC lambat tembus 300s Vercel max.
+  const poolJobs = [];
   for (const asset of ["USDT", "USDC", "GOLD", "XAUT"]) {
-    const pools = [];
     try {
-      pools.push({ label: "v2", address: getEarnPoolAddress(asset) });
+      poolJobs.push({ asset, label: "v2", address: getEarnPoolAddress(asset) });
     } catch {}
     if (LEGACY_EARN_POOLS[asset]) {
-      pools.push({ label: "v1", address: LEGACY_EARN_POOLS[asset] });
+      poolJobs.push({
+        asset,
+        label: "v1",
+        address: LEGACY_EARN_POOLS[asset],
+      });
     }
-
-    const poolReports = [];
-    for (const pool of pools) {
-      try {
-        const contract = getContract({
-          client: bl.client,
-          chain: bl.customSepolia,
-          address: pool.address,
-        });
-        const tokenAddr = (
-          await withRpcRetry(() =>
-            readContract({
-              contract,
-              method: "function assetToken() view returns (address)",
-              params: [],
-            }),
-          )
-        ).toString();
-        const token = getContract({
-          client: bl.client,
-          chain: bl.customSepolia,
-          address: tokenAddr,
-        });
-        const [liquid, principalLiab, rewardLiab] = await withRpcRetry(() =>
-          Promise.all([
-            readContract({
-              contract: token,
-              method: "function balanceOf(address) view returns (uint256)",
-              params: [pool.address],
-            }),
-            readContract({
-              contract,
-              method: "function totalPrincipalLiability() view returns (uint256)",
-              params: [],
-            }),
-            readContract({
-              contract,
-              method: "function totalRewardLiability() view returns (uint256)",
-              params: [],
-            }),
-          ]),
-        );
-
-        // Posisi ACTIVE di DB untuk pool ini, matang <= 10 hari
-        const positions = await EarnPosition.findAll({
-          where: {
-            asset,
-            status: "ACTIVE",
-            poolAddress: pool.address,
-            maturityAt: {
-              [Op.lte]: new Date(now + 10 * 86400_000),
-            },
-          },
-          attributes: ["id", "positionId", "principal", "maturityAt"],
-        });
-
-        const horizons = {};
-        for (const d of MATURITY_HORIZONS) {
-          const due = positions.filter(
-            (p) =>
-              p.maturityAt &&
-              new Date(p.maturityAt).getTime() <= now + d * 86400_000,
-          );
-          horizons[`d${d}`] = {
-            count: due.length,
-            principal: due
-              .reduce((s, p) => s + BigInt(p.principal || 0), 0n)
-              .toString(),
-          };
-        }
-
-        const totalLiab = BigInt(principalLiab) + BigInt(rewardLiab);
-        poolReports.push({
-          pool: pool.address,
-          version: pool.label,
-          liquid: BigInt(liquid).toString(),
-          principal_liability: BigInt(principalLiab).toString(),
-          reward_liability: BigInt(rewardLiab).toString(),
-          total_liability: totalLiab.toString(),
-          liquidity_ok: BigInt(liquid) >= totalLiab,
-          shortfall:
-            BigInt(liquid) >= totalLiab
-              ? "0"
-              : (totalLiab - BigInt(liquid)).toString(),
-          maturing: horizons,
-        });
-      } catch (e) {
-        poolReports.push({
-          pool: pool.address,
-          version: pool.label,
-          error: e.message,
-        });
-      }
-    }
-    report[asset] = poolReports;
   }
+
+  const poolResult = async (asset, pool) => {
+    try {
+      const contract = getContract({
+        client: bl.client,
+        chain: bl.customSepolia,
+        address: pool.address,
+      });
+      const tokenAddr = (
+        await withRpcRetry(() =>
+          readContract({
+            contract,
+            method: "function assetToken() view returns (address)",
+            params: [],
+          }),
+        )
+      ).toString();
+      const token = getContract({
+        client: bl.client,
+        chain: bl.customSepolia,
+        address: tokenAddr,
+      });
+      const [liquid, principalLiab, rewardLiab] = await withRpcRetry(() =>
+        Promise.all([
+          readContract({
+            contract: token,
+            method: "function balanceOf(address) view returns (uint256)",
+            params: [pool.address],
+          }),
+          readContract({
+            contract,
+            method: "function totalPrincipalLiability() view returns (uint256)",
+            params: [],
+          }),
+          readContract({
+            contract,
+            method: "function totalRewardLiability() view returns (uint256)",
+            params: [],
+          }),
+        ]),
+      );
+
+      // Posisi ACTIVE di DB untuk pool ini, matang <= 10 hari
+      const positions = await EarnPosition.findAll({
+        where: {
+          asset,
+          status: "ACTIVE",
+          poolAddress: pool.address,
+          maturityAt: {
+            [Op.lte]: new Date(now + 10 * 86400_000),
+          },
+        },
+        attributes: ["id", "positionId", "principal", "maturityAt"],
+      });
+
+      const horizons = {};
+      for (const d of MATURITY_HORIZONS) {
+        const due = positions.filter(
+          (p) =>
+            p.maturityAt &&
+            new Date(p.maturityAt).getTime() <= now + d * 86400_000,
+        );
+        horizons[`d${d}`] = {
+          count: due.length,
+          principal: due
+            .reduce((s, p) => s + BigInt(p.principal || 0), 0n)
+            .toString(),
+        };
+      }
+
+      const totalLiab = BigInt(principalLiab) + BigInt(rewardLiab);
+      return {
+        pool: pool.address,
+        version: pool.label,
+        liquid: BigInt(liquid).toString(),
+        principal_liability: BigInt(principalLiab).toString(),
+        reward_liability: BigInt(rewardLiab).toString(),
+        total_liability: totalLiab.toString(),
+        liquidity_ok: BigInt(liquid) >= totalLiab,
+        shortfall:
+          BigInt(liquid) >= totalLiab
+            ? "0"
+            : (totalLiab - BigInt(liquid)).toString(),
+        maturing: horizons,
+      };
+    } catch (e) {
+      return { pool: pool.address, version: pool.label, error: e.message };
+    }
+  };
+
+  const results = await Promise.all(
+    poolJobs.map((job) => poolResult(job.asset, job)),
+  );
+
+  for (const job of poolJobs) {
+    report[job.asset] = report[job.asset] || [];
+  }
+  results.forEach((r, i) => {
+    report[poolJobs[i].asset].push(r);
+  });
 
   console.log("[earn-treasury]", JSON.stringify(report));
   return report;
