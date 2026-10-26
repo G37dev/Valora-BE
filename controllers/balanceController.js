@@ -2,12 +2,37 @@ const { Wallet, InternalWallet } = require("../models");
 const { createThirdwebClient, getContract } = require("thirdweb");
 const { sepolia } = require("../utils/chain");
 const { getWalletBalance } = require("thirdweb/wallets");
-const { getBalance: getErc20Balance } = require("thirdweb/extensions/erc20");
+const {
+  balanceOf,
+  decimals: readDecimals,
+} = require("thirdweb/extensions/erc20");
+const { toTokens } = require("thirdweb/utils");
 const { withRpcRetry } = require("../utils/rpcRetry");
 
 const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY || "",
 });
+
+// decimals() token itu statis — cache per kontrak supaya metadata
+// (name/symbol/decimals) nggak ikut di-fetch ulang tiap request balance.
+// getErc20Balance sebelumnya melakukan itu dan sering crash dengan
+// "Invalid currency token: fetch failed" saat RPC flake. Fallback 6:
+// semua dummy token kita 6 desimal.
+const decimalsCache = new Map();
+const getTokenDecimalsCached = async (tokenContract) => {
+  const addr = tokenContract.address;
+  const cached = decimalsCache.get(addr);
+  if (cached != null) return cached;
+  let dec = 6;
+  try {
+    dec = await withRpcRetry(() => readDecimals({ contract: tokenContract }), {
+      label: "decimals",
+      retries: 1,
+    });
+  } catch {}
+  decimalsCache.set(addr, dec);
+  return dec;
+};
 
 exports.getAllBalances = async (req, res) => {
   try {
@@ -79,16 +104,17 @@ exports.getAllBalances = async (req, res) => {
           address: contractAddress,
         });
 
-        const balanceResult = await withRpcRetry(
+        const balanceWei = await withRpcRetry(
           () =>
-            getErc20Balance({
+            balanceOf({
               contract: tokenContract,
               address: wallet.address,
             }),
           { label: `balance-${symbol}` },
         );
 
-        return balanceResult.displayValue || "0";
+        const dec = await getTokenDecimalsCached(tokenContract);
+        return toTokens(balanceWei, dec) || "0";
       } catch (err) {
         degraded.push(symbol);
         console.warn(
