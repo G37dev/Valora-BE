@@ -10,6 +10,7 @@
  * call karena instance di-reuse); di server persistent jadi shared.
  */
 const { eth_blockNumber } = require("thirdweb/rpc");
+const { withRpcRetry } = require("../utils/rpcRetry");
 
 const BLOCK_TTL_MS = Number(process.env.RPC_BLOCK_CACHE_TTL_MS || 12000);
 let blockCache = { value: 0, expiresAt: 0, inflight: null };
@@ -18,7 +19,9 @@ async function cachedBlockNumber(rpcRequest, ttlMs = BLOCK_TTL_MS) {
   const now = Date.now();
   if (blockCache.expiresAt > now) return blockCache.value;
   if (blockCache.inflight) return blockCache.inflight;
-  blockCache.inflight = eth_blockNumber(rpcRequest)
+  blockCache.inflight = withRpcRetry(() => eth_blockNumber(rpcRequest), {
+    label: "eth_blockNumber",
+  })
     .then((n) => {
       blockCache.value = Number(n);
       blockCache.expiresAt = Date.now() + ttlMs;

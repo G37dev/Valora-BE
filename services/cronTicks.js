@@ -19,6 +19,7 @@ const { Queue } = require("bullmq");
 const bl = require("./blockchainListener");
 const el = require("./earnListener");
 const { withRpcRetry } = require("../utils/rpcRetry");
+const { cachedBlockNumber } = require("./rpcCache");
 const loanScheduler = require("./loan/loan.scheduler");
 const { syncTokenPrices } = require("../controllers/priceController");
 const businessClock = require("./businessClock");
@@ -183,7 +184,7 @@ async function pollRange({ contract, key, safeHead, fetchEvents, handle }) {
 
 async function tickChainEvents() {
   const rpc = getRpcClient({ client: bl.client, chain: bl.customSepolia });
-  const latest = await eth_blockNumber(rpc);
+  const latest = BigInt(await cachedBlockNumber(rpc));
   const safeHead = latest - CONFIRMATIONS;
   const out = { latest_block: Number(latest), safe_head: Number(safeHead) };
 

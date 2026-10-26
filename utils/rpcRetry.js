@@ -17,8 +17,9 @@ const TRANSIENT_PATTERNS = [
   /ECONNRESET|ECONNREFUSED|ENETUNREACH|fetch failed|network error/i,
   /block not found/i,
   /reading 'buffer'/i,
+  /cannot convert undefined to a bigint/i, // RPC balas 429/error body
   /unexpected token/i, // response HTML/non-JSON
-  /\b(502|503|504)\b/,
+  /\b(429|502|503|504)\b/,
   /internal json-rpc error/i,
 ];
 
