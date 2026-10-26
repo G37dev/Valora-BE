@@ -9,17 +9,6 @@ const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY || "",
 });
 
-// TEMP debug: identitas client (clientId turunan secretKey, non-rahasia)
-// + probe langsung ke thirdweb gw — ngecek key di env ini valid/401.
-console.log("[rpc-debug] clientId:", client.clientId);
-fetch("https://11155111.rpc.thirdweb.com", {
-  method: "POST",
-  headers: { "content-type": "application/json", "x-secret-key": process.env.THIRDWEB_SECRET_KEY || "" },
-  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
-})
-  .then((r) => console.log("[rpc-debug] thirdweb probe status:", r.status))
-  .catch((e) => console.log("[rpc-debug] thirdweb probe error:", e.message));
-
 exports.getAllBalances = async (req, res) => {
   try {
     const { coreId } = req.params;
