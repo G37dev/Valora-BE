@@ -114,16 +114,19 @@ async function drainQueue(name, timeoutMs = 40_000) {
 }
 
 async function drainAllQueues(timeoutMs = 40_000) {
-  const perQueue = Math.max(10_000, Math.floor(timeoutMs / 3));
-  const out = {};
-  for (const name of Object.keys(QUEUE_WORKERS)) {
-    try {
-      out[name] = await drainQueue(name, perQueue);
-    } catch (error) {
-      out[name] = { error: error.message };
-    }
-  }
-  return out;
+  // Paralel — tiap queue punya Worker + koneksi Redis sendiri. Sebelumnya
+  // sekuensial: total wait bisa 3×timeoutMs (~120s) dan cron-job.org
+  // menandai request timeout walau function Vercel masih selesai.
+  const entries = await Promise.all(
+    Object.keys(QUEUE_WORKERS).map(async (name) => {
+      try {
+        return [name, await drainQueue(name, timeoutMs)];
+      } catch (error) {
+        return [name, { error: error.message }];
+      }
+    }),
+  );
+  return Object.fromEntries(entries);
 }
 
 // ------------------------------------------------------------------
