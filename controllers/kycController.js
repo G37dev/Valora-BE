@@ -133,7 +133,7 @@ exports.getKyc = async (req, res) => {
     if (
       kyc &&
       kyc.status !== "VERIFIED" &&
-      kyc.provider_id !== "sumsub" &&
+      (kyc.provider_id !== "sumsub" || !kyc.provider_reference) &&
       sumsubService.isConfigured()
     ) {
       try {
