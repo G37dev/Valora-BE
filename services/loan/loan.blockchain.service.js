@@ -382,12 +382,15 @@ async function readOnchainPosition(position) {
     };
   }
   const { readContract } = thirdweb();
-  const [owner, locked, status] = await readContract({
-    contract: escrowContract(position.collateralAsset),
-    method:
-      "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
-    params: [positionIdBytes32(position.id)],
-  });
+  const { withRpcRetry } = require("../../utils/rpcRetry");
+  const [owner, locked, status] = await withRpcRetry(() =>
+    readContract({
+      contract: escrowContract(position.collateralAsset),
+      method:
+        "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
+      params: [positionIdBytes32(position.id)],
+    }),
+  );
   return { owner, locked, status: Number(status) };
 }
 

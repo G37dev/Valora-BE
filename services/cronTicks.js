@@ -18,6 +18,7 @@ const { Queue } = require("bullmq");
 
 const bl = require("./blockchainListener");
 const el = require("./earnListener");
+const { withRpcRetry } = require("../utils/rpcRetry");
 const loanScheduler = require("./loan/loan.scheduler");
 const { syncTokenPrices } = require("../controllers/priceController");
 const businessClock = require("./businessClock");
@@ -283,34 +284,38 @@ async function tickEarnTreasury() {
           address: pool.address,
         });
         const tokenAddr = (
-          await readContract({
-            contract,
-            method: "function assetToken() view returns (address)",
-            params: [],
-          })
+          await withRpcRetry(() =>
+            readContract({
+              contract,
+              method: "function assetToken() view returns (address)",
+              params: [],
+            }),
+          )
         ).toString();
         const token = getContract({
           client: bl.client,
           chain: bl.customSepolia,
           address: tokenAddr,
         });
-        const [liquid, principalLiab, rewardLiab] = await Promise.all([
-          readContract({
-            contract: token,
-            method: "function balanceOf(address) view returns (uint256)",
-            params: [pool.address],
-          }),
-          readContract({
-            contract,
-            method: "function totalPrincipalLiability() view returns (uint256)",
-            params: [],
-          }),
-          readContract({
-            contract,
-            method: "function totalRewardLiability() view returns (uint256)",
-            params: [],
-          }),
-        ]);
+        const [liquid, principalLiab, rewardLiab] = await withRpcRetry(() =>
+          Promise.all([
+            readContract({
+              contract: token,
+              method: "function balanceOf(address) view returns (uint256)",
+              params: [pool.address],
+            }),
+            readContract({
+              contract,
+              method: "function totalPrincipalLiability() view returns (uint256)",
+              params: [],
+            }),
+            readContract({
+              contract,
+              method: "function totalRewardLiability() view returns (uint256)",
+              params: [],
+            }),
+          ]),
+        );
 
         // Posisi ACTIVE di DB untuk pool ini, matang <= 10 hari
         const positions = await EarnPosition.findAll({
