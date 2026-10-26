@@ -143,7 +143,17 @@ router.get(
 router.get(
   "/cron/queue-drain",
   cronAuth,
-  runCron("queue-drain", cronTicks.drainAllQueues),
+  runCron("queue-drain", async () => {
+    // Chain event polling ikut queue-drain (1 mnt) supaya deposit crypto
+    // terdeteksi saat masih <12 konfirmasi — kalau nunggu all-tick (5 mnt)
+    // row baru dibuat sudah langsung SUCCESS, pending-nya tidak pernah
+    // kelihatan dan history terasa "hilang" beberapa menit.
+    const [drain, chain] = await Promise.all([
+      cronTicks.drainAllQueues(),
+      cronTicks.tickChainEvents(),
+    ]);
+    return { drain, chain };
+  }),
 );
 
 router.get(
