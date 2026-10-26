@@ -19,7 +19,7 @@ const TRANSIENT_PATTERNS = [
   /reading 'buffer'/i,
   /cannot convert undefined to a bigint/i, // RPC balas 429/error body
   /unexpected token/i, // response HTML/non-JSON
-  /\b(429|502|503|504)\b/,
+  /\b(401|429|502|503|504)\b/,
   /internal json-rpc error/i,
 ];
 
