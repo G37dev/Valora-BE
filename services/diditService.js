@@ -91,9 +91,15 @@ function mapStatusToLocal(status) {
     case "Approved":
       return "VERIFIED";
     case "Declined":
+      return "REJECTED";
+    /*
+     * Expired/Kyc Expired = sesi lapsed (TTL habis), BUKAN penolakan
+     * dokumen — treat sebagai PENDING supaya user bisa retry. Jangan
+     * pernah downgrade profil VERIFIED (guard ada di webhook).
+     */
     case "Expired":
     case "Kyc Expired":
-      return "REJECTED";
+      return "PENDING";
     case "In Review":
     case "In Progress":
     case "Not Started":

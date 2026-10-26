@@ -406,12 +406,28 @@ exports.veriffWebhook = async (req, res) => {
       approved: "VERIFIED",
       declined: "REJECTED",
       resubmission_requested: "PENDING",
-      expired: "REJECTED",
-      abandoned: "UNVERIFIED",
+      // expired/abandoned = sesi lapsed, bukan penolakan dokumen
+      expired: "PENDING",
+      abandoned: "PENDING",
     };
     const newStatus = statusMap[status];
     if (!newStatus) {
       // event non-decision (started/submitted) — cukup ack
+      return res.status(200).json({ success: true, ignored: status });
+    }
+
+    /*
+     * Profil VERIFIED hanya boleh berubah oleh decision terminal
+     * (approved/declined) — event non-final tidak boleh downgrade.
+     */
+    if (
+      kyc.status === "VERIFIED" &&
+      newStatus !== "VERIFIED" &&
+      newStatus !== "REJECTED"
+    ) {
+      console.log(
+        `[Veriff] KYC ${coreId} VERIFIED — abaikan event non-final '${status}'.`,
+      );
       return res.status(200).json({ success: true, ignored: status });
     }
 
@@ -573,8 +589,27 @@ exports.diditWebhook = async (req, res) => {
       return res.status(200).json({ success: true, ignored: status });
     }
 
+    /*
+     * Guard: profil yang sudah VERIFIED tidak boleh di-downgrade oleh
+     * status non-final (Expired → PENDING, In Review, dst.). Hanya
+     * decision terminal dari provider yang bisa mengubahnya —
+     * Approved (re-verify) atau Declined (penolakan beneran).
+     */
+    if (
+      kyc.status === "VERIFIED" &&
+      newStatus !== "VERIFIED" &&
+      newStatus !== "REJECTED"
+    ) {
+      console.log(
+        `[Didit] KYC ${coreId} VERIFIED — abaikan event non-final '${status}'.`,
+      );
+      return res.status(200).json({ success: true, ignored: status });
+    }
+
     await kyc.update({
       status: newStatus,
+      provider_id: "didit",
+      verification_source: "didit",
       provider_reference: sessionId || kyc.provider_reference,
       verified_at: newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
       metadata: {
@@ -761,8 +796,26 @@ exports.sumsubWebhook = async (req, res) => {
       return res.status(200).json({ success: true, ignored: type });
     }
 
+    /*
+     * Profil VERIFIED hanya boleh berubah oleh decision terminal
+     * (GREEN/RED) — status review non-final (pending/queued/onHold)
+     * tidak boleh downgrade.
+     */
+    if (
+      kyc.status === "VERIFIED" &&
+      newStatus !== "VERIFIED" &&
+      newStatus !== "REJECTED"
+    ) {
+      console.log(
+        `[Sumsub] KYC ${coreId} VERIFIED — abaikan event non-final '${type}'.`,
+      );
+      return res.status(200).json({ success: true, ignored: type });
+    }
+
     await kyc.update({
       status: newStatus,
+      provider_id: "sumsub",
+      verification_source: "sumsub",
       provider_reference: applicantId || kyc.provider_reference,
       verified_at: newStatus === "VERIFIED" ? new Date() : kyc.verified_at,
       metadata: {
