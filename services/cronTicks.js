@@ -202,55 +202,83 @@ async function tickChainEvents() {
       useIndexer: false,
     });
 
-  for (const token of bl.getTokensToWatch().filter((t) => t.address)) {
-    const contract = getContract({
-      client: bl.client,
-      chain: bl.customSepolia,
-      address: token.address,
-    });
-    try {
-      out[`token:${token.name}`] = await pollRange({
-        contract,
-        key: `chain_evt:token:${token.address.toLowerCase()}`,
-        safeHead,
-        fetchEvents: (c, f, t) => fetchEvents(c, f, t, [transferEvent]),
-        handle: (event) => bl.handleTransferEvent({ event, token }),
-      });
-    } catch (error) {
-      out[`token:${token.name}`] = { error: error.message };
-    }
-  }
+  // Tiap kontrak independen (checkpoint key sendiri) — paralel supaya
+  // tick selesai di bawah timeout scheduler. Progress parsial aman:
+  // cursor per-key tersimpan walau kontrak lain gagal.
+  const [tokenResults, poolResults] = await Promise.all([
+    Promise.all(
+      bl
+        .getTokensToWatch()
+        .filter((t) => t.address)
+        .map(async (token) => {
+          const contract = getContract({
+            client: bl.client,
+            chain: bl.customSepolia,
+            address: token.address,
+          });
+          try {
+            return [
+              `token:${token.name}`,
+              await pollRange({
+                contract,
+                key: `chain_evt:token:${token.address.toLowerCase()}`,
+                safeHead,
+                fetchEvents: (c, f, t) => fetchEvents(c, f, t, [transferEvent]),
+                handle: (event) => bl.handleTransferEvent({ event, token }),
+              }),
+            ];
+          } catch (error) {
+            return [`token:${token.name}`, { error: error.message }];
+          }
+        }),
+    ),
+    Promise.all(
+      el
+        .getEarnPoolsToWatch()
+        .filter((p) => p.address)
+        .map(async (pool) => {
+          const contract = getContract({
+            client: bl.client,
+            chain: bl.customSepolia,
+            address: pool.address,
+          });
+          const baseKey = `chain_evt:earn:${pool.address.toLowerCase()}`;
+          try {
+            const [created, claimed] = await Promise.all([
+              pollRange({
+                contract,
+                key: `${baseKey}:created`,
+                safeHead,
+                fetchEvents: (c, f, t) =>
+                  fetchEvents(c, f, t, [earnCreatedEvent]),
+                handle: (event) => el.handleEarnCreatedEvent({ event, pool }),
+              }),
+              pollRange({
+                contract,
+                key: `${baseKey}:claimed`,
+                safeHead,
+                fetchEvents: (c, f, t) =>
+                  fetchEvents(c, f, t, [earnClaimedEvent]),
+                handle: (event) => el.handleEarnClaimedEvent({ event, pool }),
+              }),
+            ]);
+            return [
+              `earn:${pool.asset}`,
+              {
+                created: created.processed,
+                claimed: claimed.processed,
+                done: created.done && claimed.done,
+              },
+            ];
+          } catch (error) {
+            return [`earn:${pool.asset}`, { error: error.message }];
+          }
+        }),
+    ),
+  ]);
 
-  for (const pool of el.getEarnPoolsToWatch().filter((p) => p.address)) {
-    const contract = getContract({
-      client: bl.client,
-      chain: bl.customSepolia,
-      address: pool.address,
-    });
-    const baseKey = `chain_evt:earn:${pool.address.toLowerCase()}`;
-    try {
-      const created = await pollRange({
-        contract,
-        key: `${baseKey}:created`,
-        safeHead,
-        fetchEvents: (c, f, t) => fetchEvents(c, f, t, [earnCreatedEvent]),
-        handle: (event) => el.handleEarnCreatedEvent({ event, pool }),
-      });
-      const claimed = await pollRange({
-        contract,
-        key: `${baseKey}:claimed`,
-        safeHead,
-        fetchEvents: (c, f, t) => fetchEvents(c, f, t, [earnClaimedEvent]),
-        handle: (event) => el.handleEarnClaimedEvent({ event, pool }),
-      });
-      out[`earn:${pool.asset}`] = {
-        created: created.processed,
-        claimed: claimed.processed,
-        done: created.done && claimed.done,
-      };
-    } catch (error) {
-      out[`earn:${pool.asset}`] = { error: error.message };
-    }
+  for (const [key, value] of [...tokenResults, ...poolResults]) {
+    out[key] = value;
   }
 
   return out;
