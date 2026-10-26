@@ -189,7 +189,15 @@ async function tickChainEvents() {
   const out = { latest_block: Number(latest), safe_head: Number(safeHead) };
 
   const fetchEvents = (contract, from, to, events) =>
-    getContractEvents({ contract, fromBlock: from, toBlock: to, events });
+    // useIndexer:false — Insight tidak support Sepolia; tanpa ini tiap
+    // call throw "Insight is not available" dulu sebelum fallback RPC.
+    getContractEvents({
+      contract,
+      fromBlock: from,
+      toBlock: to,
+      events,
+      useIndexer: false,
+    });
 
   for (const token of bl.getTokensToWatch().filter((t) => t.address)) {
     const contract = getContract({
