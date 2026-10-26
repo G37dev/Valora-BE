@@ -3,6 +3,7 @@ const { createThirdwebClient, getContract } = require("thirdweb");
 const { sepolia } = require("../utils/chain");
 const { getWalletBalance } = require("thirdweb/wallets");
 const { getBalance: getErc20Balance } = require("thirdweb/extensions/erc20");
+const { withRpcRetry } = require("../utils/rpcRetry");
 
 const client = createThirdwebClient({
   secretKey: process.env.THIRDWEB_SECRET_KEY || "",
@@ -46,23 +47,29 @@ exports.getAllBalances = async (req, res) => {
     // 3. Ambil saldo Native (Sepolia ETH)
     // ==========================================
     let ethBalance = "0";
+    const degraded = [];
 
     try {
-      const nativeRes = await getWalletBalance({
-        client,
-        chain: sepolia,
-        address: wallet.address,
-      });
+      const nativeRes = await withRpcRetry(
+        () =>
+          getWalletBalance({
+            client,
+            chain: sepolia,
+            address: wallet.address,
+          }),
+        { label: "balance-eth" },
+      );
 
       ethBalance = nativeRes.displayValue;
     } catch (err) {
+      degraded.push("eth");
       console.warn("Gagal fetch ETH balance:", err.message);
     }
 
     // ==========================================
     // 4. Helper ERC20 balance
     // ==========================================
-    const fetchTokenBalance = async (contractAddress) => {
+    const fetchTokenBalance = async (contractAddress, symbol) => {
       if (!contractAddress) return "0";
 
       try {
@@ -72,13 +79,18 @@ exports.getAllBalances = async (req, res) => {
           address: contractAddress,
         });
 
-        const balanceResult = await getErc20Balance({
-          contract: tokenContract,
-          address: wallet.address,
-        });
+        const balanceResult = await withRpcRetry(
+          () =>
+            getErc20Balance({
+              contract: tokenContract,
+              address: wallet.address,
+            }),
+          { label: `balance-${symbol}` },
+        );
 
         return balanceResult.displayValue || "0";
       } catch (err) {
+        degraded.push(symbol);
         console.warn(
           `Gagal fetch balance untuk ${contractAddress}:`,
           err.message,
@@ -93,10 +105,10 @@ exports.getAllBalances = async (req, res) => {
     // ==========================================
     const [usdtBalance, usdcBalance, xautBalance, goldBalance] =
       await Promise.all([
-        fetchTokenBalance(process.env.USDT_DUMMY_CONTRACT_ADDRESS),
-        fetchTokenBalance(process.env.USDC_DUMMY_CONTRACT_ADDRESS),
-        fetchTokenBalance(process.env.XAUT_DUMMY_CONTRACT_ADDRESS),
-        fetchTokenBalance(process.env.GOLD_DUMMY_CONTRACT_ADDRESS),
+        fetchTokenBalance(process.env.USDT_DUMMY_CONTRACT_ADDRESS, "usdt"),
+        fetchTokenBalance(process.env.USDC_DUMMY_CONTRACT_ADDRESS, "usdc"),
+        fetchTokenBalance(process.env.XAUT_DUMMY_CONTRACT_ADDRESS, "xaut"),
+        fetchTokenBalance(process.env.GOLD_DUMMY_CONTRACT_ADDRESS, "gold"),
       ]);
 
     // ==========================================
@@ -142,6 +154,13 @@ exports.getAllBalances = async (req, res) => {
         chain: wallet.chain,
         status: wallet.status,
       },
+
+      /*
+       * Asset yang gagal di-fetch setelah retry — FE bisa bedain
+       * "balance 0 beneran" vs "RPC lagi down" (balance tetap "0"
+       * untuk kompatibilitas, tapi flag ini memberi sinyal jujur).
+       */
+      degraded,
     };
 
     return res.status(200).json({
