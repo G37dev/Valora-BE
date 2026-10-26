@@ -18,17 +18,24 @@ const { defineChain } = require("thirdweb/chains");
 
 const THIRDWEB_GW = "https://11155111.rpc.thirdweb.com";
 const PUBLICNODE = "https://ethereum-sepolia-rpc.publicnode.com";
+const TENDERLY = "https://sepolia.gateway.tenderly.co";
 
 /*
  * Pool berbobot — thirdweb 2 slot (primary), sisanya fallback.
  * ~50% traffic ke thirdweb, sisanya tersebar ke provider cadangan;
  * retry withRpcRetry otomatis mendarat di provider berbeda.
+ *
+ * SEPOLIA_RPC_URL opsional: key Infura yang lama kena "Payment
+ * Required" (kuota habis) — provider error non-standar itu bikin
+ * thirdweb crash `reading 'buffer'`, jadi hanya masuk pool kalau
+ * env-nya memang di-set ke endpoint yang sehat.
  */
 const rpcPool = [
   THIRDWEB_GW,
   THIRDWEB_GW,
-  process.env.SEPOLIA_RPC_URL,
+  TENDERLY,
   PUBLICNODE,
+  process.env.SEPOLIA_RPC_URL,
 ].filter(Boolean);
 
 let rpcIdx = 0;
