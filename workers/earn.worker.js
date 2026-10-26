@@ -606,20 +606,40 @@ const earnWorker = new Worker(
       console.error("[Earn Worker] JOB ERROR:", error);
 
       // =====================================================
-      // 24. MARK FAILED
+      // 24. MARK FAILED — hanya pada attempt terakhir.
+      //
+      // BullMQ masih punya retry tersisa -> status tetap
+      // PROCESSING supaya UI tidak menampilkan FAILED untuk
+      // error transient (RPC/bundler hiccup). Deterministic
+      // failures yang sudah set FAILED via failPosition()
+      // dibiarkan FAILED.
       // =====================================================
 
-      if (position) {
-        try {
-          await position.update({
-            status: EARN_STATUS.FAILED,
-            errorMessage: String(error?.message || error).slice(0, 2000),
-            failedAt: new Date(),
-          });
+      const maxAttempts = job?.opts?.attempts || 1;
+      const isFinalAttempt = (job?.attemptsMade || 0) >= maxAttempts;
 
-          console.log("[Earn Worker] Position marked FAILED:", position.id);
+      if (position && position.status !== EARN_STATUS.FAILED) {
+        try {
+          if (isFinalAttempt) {
+            await position.update({
+              status: EARN_STATUS.FAILED,
+              errorMessage: String(error?.message || error).slice(0, 2000),
+              failedAt: new Date(),
+            });
+
+            console.log("[Earn Worker] Position marked FAILED:", position.id);
+          } else {
+            await position.update({
+              status: EARN_STATUS.PROCESSING,
+              errorMessage: String(error?.message || error).slice(0, 2000),
+            });
+
+            console.log(
+              `[Earn Worker] Position ${position.id} attempt ${job?.attemptsMade}/${maxAttempts} gagal — retry menjadwalkan ulang, status tetap PROCESSING.`,
+            );
+          }
         } catch (dbError) {
-          console.error("[Earn Worker] Gagal update FAILED:", dbError);
+          console.error("[Earn Worker] Gagal update status:", dbError);
         }
       }
 

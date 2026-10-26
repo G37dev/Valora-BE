@@ -534,15 +534,38 @@ const earnClaimWorker = new Worker(
         try {
           /**
            * Jangan ubah CLAIMED kembali menjadi FAILED.
+           * FAILED hanya pada attempt terakhir — selama BullMQ
+           * masih punya retry, status tetap CLAIMING supaya UI
+           * tidak menampilkan FAILED untuk error transient.
            */
-          if (position.status !== EARN_STATUS.CLAIMED) {
-            await position.update({
-              status: EARN_STATUS.FAILED,
-              errorMessage: String(error?.message || error).slice(0, 2000),
-              failedAt: new Date(),
-            });
+          const maxAttempts = job?.opts?.attempts || 1;
+          const isFinalAttempt = (job?.attemptsMade || 0) >= maxAttempts;
 
-            console.log("[Earn Claim Worker] Position → FAILED:", position.id);
+          if (
+            position.status !== EARN_STATUS.CLAIMED &&
+            position.status !== EARN_STATUS.FAILED
+          ) {
+            if (isFinalAttempt) {
+              await position.update({
+                status: EARN_STATUS.FAILED,
+                errorMessage: String(error?.message || error).slice(0, 2000),
+                failedAt: new Date(),
+              });
+
+              console.log(
+                "[Earn Claim Worker] Position → FAILED:",
+                position.id,
+              );
+            } else {
+              await position.update({
+                status: EARN_STATUS.CLAIMING,
+                errorMessage: String(error?.message || error).slice(0, 2000),
+              });
+
+              console.log(
+                `[Earn Claim Worker] Position ${position.id} attempt ${job?.attemptsMade}/${maxAttempts} gagal — retry terjadwal, status tetap CLAIMING.`,
+              );
+            }
           }
         } catch (dbError) {
           console.error("[Earn Claim Worker] Gagal update FAILED:", dbError);
