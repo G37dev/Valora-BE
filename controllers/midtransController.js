@@ -932,11 +932,22 @@ const getTopUpStatus = async (req, res) => {
         );
         const txStatus = String(tx?.transaction_status || "").toLowerCase();
 
-        if (midtrans.isFailedStatus(txStatus)) {
-          const newStatus = txStatus === "expire" ? "EXPIRED" : "FAILED";
+        /*
+         * Midtrans balas HTTP 200 dengan status_code "404" untuk order
+         * Snap yang sudah mati/tidak pernah dibayar — itu terminal juga,
+         * bukan cuma deny/cancel/expire/failure.
+         */
+        const orderDead =
+          String(tx?.status_code) === "404" ||
+          (!txStatus && !midtrans.isSuccessStatus(txStatus));
+
+        if (midtrans.isFailedStatus(txStatus) || orderDead) {
+          const newStatus =
+            txStatus === "expire" || orderDead ? "EXPIRED" : "FAILED";
           await topUp.update({
             status: newStatus,
-            failureReason: txStatus,
+            failureReason:
+              txStatus || tx?.status_message || "order not found",
           });
         }
       } catch (statusErr) {
