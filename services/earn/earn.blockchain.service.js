@@ -1,7 +1,7 @@
 const { createThirdwebClient, getContract, readContract: twReadContract } = require("thirdweb");
 const { withRpcRetry } = require("../../utils/rpcRetry");
 
-// Semua readContract di file ini lewat retry — Infura/free-tier sering
+// Semua readContract di file ini lewat retry — free-tier RPC sering
 // balas 429/response malformed (thirdweb crash .buffer) pada burst.
 const readContract = (opts) => withRpcRetry(() => twReadContract(opts));
 

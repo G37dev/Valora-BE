@@ -1,8 +1,8 @@
 /**
  * Retry helper untuk RPC read yang flaky.
  *
- * Provider (Infura free tier / public RPC) sering balas 429 / response
- * malformed di bawah burst — thirdweb lalu crash dengan TypeError macam
+ * Provider free tier sering balas 429 / response malformed di bawah
+ * burst — thirdweb lalu crash dengan TypeError macam
  * "Cannot read properties of undefined (reading 'buffer')" alih-alih
  * error yang jelas. Retry singkat dengan backoff menutup mayoritas
  * kasus itu. Error non-transient (revert kontrak, data invalid) langsung
