@@ -39,6 +39,36 @@ const {
 
 const { dec } = calc;
 
+// Custom error LoanCollateralEscrow yang final — retry dengan instruksi yang
+// sama tidak akan mengubah hasil (mismatch state on-chain / signature / split).
+// SignatureExpired sengaja tidak termasuk: execute() me-re-sign saat expired.
+const TERMINAL_REVERTS = new Set([
+  "0xe6c4247b", // InvalidAddress
+  "0x2c5211c6", // InvalidAmount
+  "0x82b42900", // Unauthorized
+  "0x709cb07e", // PositionExists
+  "0xd58f9686", // PositionNotLocked
+  "0xa8c81623", // OwnerMismatch
+  "0x702b6cfc", // RecipientNotOwner
+  "0x9ed7d0a7", // TreasuryMismatch
+  "0x1f6d5aef", // NonceUsed
+  "0x8baa579f", // InvalidSignature
+  "0xf3c85649", // SplitMismatch
+  "0xbb55fd27", // InsufficientLiquidity
+]);
+
+/**
+ * Ekstrak selector revert dari error viem/thirdweb. Return selector (lowercase)
+ * bila termasuk revert final, null untuk error transient (RPC, timeout, dll).
+ */
+function terminalRevertSelector(error) {
+  const msg = String(error?.message || "");
+  const match = msg.match(/0x[0-9a-fA-F]{8}/);
+  if (match && TERMINAL_REVERTS.has(match[0].toLowerCase()))
+    return match[0].toLowerCase();
+  return null;
+}
+
 /**
  * Buat record liquidation AUTHORIZED + instruksi bertanda tangan untuk
  * posisi LIQUIDATION_PENDING. Idempotent: 1 liquidation aktif / posisi.
@@ -50,7 +80,7 @@ async function authorize(positionId, now) {
     const p = await LoanPosition.findByPk(positionId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p || p.status !== STATUS.LIQUIDATION_PENDING) return;
     const existing = await LoanLiquidation.findOne({
-      where: { positionId: p.id, state: ["AUTHORIZED", "SUBMITTED", "FAILED_RETRY"] },
+      where: { positionId: p.id, state: ["AUTHORIZED", "SUBMITTED", "FAILED_RETRY", "FAILED_FINAL"] },
       transaction: t,
     });
     if (existing) {
@@ -138,8 +168,20 @@ async function execute(liquidationId, now) {
     await liq.update({ state: "SUBMITTED" });
     txHash = await bc.settleLiquidation(p0, liq, instruction, signature);
   } catch (error) {
-    await liq.update({ state: "FAILED_RETRY", metadata: { ...(liq.metadata || {}), last_error: error.message, failed_at: now } });
-    console.error(`[Loan Liquidation] settle ${liq.id} gagal:`, error.message);
+    const terminal = terminalRevertSelector(error);
+    await liq.update({
+      state: terminal ? "FAILED_FINAL" : "FAILED_RETRY",
+      metadata: {
+        ...(liq.metadata || {}),
+        last_error: error.message,
+        failed_at: now,
+        ...(terminal ? { terminal_revert: terminal } : {}),
+      },
+    });
+    console.error(
+      `[Loan Liquidation] settle ${liq.id} gagal${terminal ? ` (terminal ${terminal})` : ""}:`,
+      error.message,
+    );
     return liq;
   }
 

@@ -119,9 +119,13 @@ async function poolDashboard(now) {
   const pendingLiq = await LoanLiquidation.count({
     where: { state: { [Op.in]: ["AUTHORIZED", "SUBMITTED", "FAILED_RETRY"] } },
   });
+  const failedFinalLiq = await LoanLiquidation.count({
+    where: { state: "FAILED_FINAL" },
+  });
   return toJsonSafe({
     ...m,
     pending_liquidations: pendingLiq,
+    failed_final_liquidations: failedFinalLiq,
     policy_version: policy.version,
     updated_at: row.updated_at ?? row.updatedAt,
     updated_by: row.updatedBy,
