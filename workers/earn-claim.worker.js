@@ -265,6 +265,25 @@ const earnClaimWorker = new Worker(
           completedAt: new Date(),
         });
 
+        // Claim sukses di attempt sebelumnya tapi job crash sebelum
+        // push terkirim — kirim notifikasi di sini (fire-and-forget).
+        try {
+          await pushService.sendPushToUser(position.coreId, {
+            title: "Earn Claimed",
+            body: `Your ${position.asset} earn claim has been completed.`,
+            data: {
+              type: "earn",
+              event: "earn_claimed",
+              position_id: String(position.id),
+            },
+          });
+        } catch (pushError) {
+          console.log(
+            `[Earn Claim Worker] push gagal position ${position.id}:`,
+            pushError.message,
+          );
+        }
+
         return {
           success: true,
           onchainSynced: true,
@@ -595,6 +614,24 @@ const earnClaimWorker = new Worker(
                 "[Earn Claim Worker] Position → FAILED:",
                 position.id,
               );
+
+              // Notif kegagalan final — user tidak ditinggal tanpa kabar.
+              try {
+                await pushService.sendPushToUser(position.coreId, {
+                  title: "Earn Claim Failed",
+                  body: `Your ${position.asset} earn claim could not be completed. Please try again.`,
+                  data: {
+                    type: "earn",
+                    event: "earn_claim_failed",
+                    position_id: String(position.id),
+                  },
+                });
+              } catch (pushError) {
+                console.log(
+                  `[Earn Claim Worker] push gagal position ${position.id}:`,
+                  pushError.message,
+                );
+              }
             } else {
               await position.update({
                 status: EARN_STATUS.CLAIMING,
