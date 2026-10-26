@@ -758,12 +758,24 @@ async function transferCryptoToPool(swap) {
     throw new Error("Amount transfer tidak valid");
   }
 
-  const userBalance = await balanceOf({
-    contract: token,
-    address: smartAccount.address,
-  });
+  // Race read-after-write: deposit user bisa baru landing — provider
+  // round-robin bisa belum sync. Kalau saldo kelihatan kurang, poll
+  // beberapa kali sebelum beneran gagal.
+  let userBalance = 0n;
+  for (let i = 0; i < 5; i++) {
+    userBalance = BigInt(
+      (
+        await balanceOf({
+          contract: token,
+          address: smartAccount.address,
+        })
+      ).toString(),
+    );
+    if (userBalance >= rawAmount) break;
+    if (i < 4) await new Promise((r) => setTimeout(r, 2000));
+  }
 
-  if (BigInt(userBalance.toString()) < rawAmount) {
+  if (userBalance < rawAmount) {
     throw new Error(`Saldo ${asset} tidak cukup`);
   }
 

@@ -305,11 +305,18 @@ const earnWorker = new Worker(
           };
         }
 
-        // Pre-check balance — hemat sponsored gas untuk tx yang pasti revert
-        const balance = await readTokenBalance({
-          tokenAddress,
-          owner: smartAccount.address,
-        });
+        // Pre-check balance — hemat sponsored gas untuk tx yang pasti
+        // revert. Poll singkat: deposit terbaru bisa belum kebaca di
+        // provider round-robin (read-after-write lag).
+        let balance = 0n;
+        for (let i = 0; i < 5; i++) {
+          balance = await readTokenBalance({
+            tokenAddress,
+            owner: smartAccount.address,
+          });
+          if (balance >= amount) break;
+          if (i < 4) await new Promise((r) => setTimeout(r, 2000));
+        }
         if (balance < amount) {
           throw new Error(
             `Saldo token tidak cukup. balance=${balance.toString()}, required=${amount.toString()}`,
