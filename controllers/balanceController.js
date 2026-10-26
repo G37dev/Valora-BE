@@ -18,6 +18,21 @@ const client = createThirdwebClient({
 // getErc20Balance sebelumnya melakukan itu dan sering crash dengan
 // "Invalid currency token: fetch failed" saat RPC flake. Fallback 6:
 // semua dummy token kita 6 desimal.
+// Balance cache pendek per wallet — app nge-poll terus-menerus dan RPC
+// lagi flaky (fetch failed di hampir tiap attempt-1), jadi TTL 10s
+// memangkas mayoritas retry latency. Stale-nya aman: deposit tetap
+// tampil via pendingTxs dan konfirmasi butuh ~menit, bukan detik.
+const BALANCE_TTL_MS = 10000;
+const balanceCache = new Map(); // coreId -> { data, expiresAt }
+const getCachedBalance = (coreId) => {
+  const hit = balanceCache.get(coreId);
+  return hit && hit.expiresAt > Date.now() ? hit.data : null;
+};
+const setCachedBalance = (coreId, data) => {
+  if (balanceCache.size > 500) balanceCache.clear();
+  balanceCache.set(coreId, { data, expiresAt: Date.now() + BALANCE_TTL_MS });
+};
+
 const decimalsCache = new Map();
 const getTokenDecimalsCached = async (tokenContract) => {
   const addr = tokenContract.address;
@@ -62,6 +77,12 @@ exports.getAllBalances = async (req, res) => {
         coreId: coreId,
       },
     });
+
+    // Cache hit → skip semua RPC (retry latency) sama sekali.
+    const cached = getCachedBalance(coreId);
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
 
     // Kalau InternalWallet belum ada, saldo dianggap 0
     const idrBalance = internalWallet
@@ -188,6 +209,8 @@ exports.getAllBalances = async (req, res) => {
        */
       degraded,
     };
+
+    setCachedBalance(coreId, assets);
 
     return res.status(200).json({
       success: true,
