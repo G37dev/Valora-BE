@@ -25,6 +25,23 @@ const getPaymentMethodName = (paymentMethod) => {
   return names[paymentMethod] || paymentMethod;
 };
 
+/**
+ * Midtrans mengirim settlement_time dalam format WIB
+ * ("YYYY-MM-DD HH:mm:ss", Asia/Jakarta) TANPA offset.
+ * new Date() mem-parse itu sebagai waktu lokal server —
+ * di Vercel (UTC) hasilnya bergeser +7 jam dari waktu asli.
+ * Parse eksplisit sebagai UTC+7.
+ */
+const parseMidtransTime = (value) => {
+  if (!value) return new Date();
+  const m = String(value)
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  if (m) return new Date(`${m[1]}T${m[2]}+07:00`);
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+};
+
 // ============================================================
 // CREATE MIDTRANS TOP UP
 // ============================================================
@@ -657,7 +674,7 @@ const handleMidtransNotification = async (req, res) => {
 
                 providerPaymentId: transaction_id || topUp.providerPaymentId,
 
-                paidAt: settlement_time || new Date(),
+                paidAt: parseMidtransTime(settlement_time),
 
                 callbackPayload: notification,
               },
@@ -768,7 +785,7 @@ const handleMidtransNotification = async (req, res) => {
 
             providerPaymentId: transaction_id || topUp.providerPaymentId,
 
-            paidAt: settlement_time || new Date(),
+            paidAt: parseMidtransTime(settlement_time),
 
             callbackPayload: notification,
           },
