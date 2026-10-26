@@ -276,6 +276,7 @@ const createMidtransTopUp = async (req, res) => {
     await topUp.update({
       providerPaymentId: payment.orderId || topUp.refNo,
       snapToken: payment.token || null,
+      expiredAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       rawResponse: {
         redirectUrl: payment.redirectUrl || null,
         orderId: payment.orderId || null,
@@ -916,6 +917,36 @@ const getTopUpStatus = async (req, res) => {
         success: false,
         message: "TopUp not found",
       });
+    }
+
+    /*
+     * Refresh status dari Midtrans kalau masih PENDING — webhook "expire"
+     * tidak selalu sampai, jadi tanpa ini topup yang kadaluarsa di sisi
+     * Midtrans akan PENDING selamanya di DB dan user terkunci tidak bisa
+     * membuat transaksi baru.
+     */
+    if (topUp.status === "PENDING") {
+      try {
+        const tx = await midtrans.getTransactionStatus(
+          topUp.providerPaymentId || topUp.refNo,
+        );
+        const txStatus = String(tx?.transaction_status || "").toLowerCase();
+
+        if (midtrans.isFailedStatus(txStatus)) {
+          const newStatus = txStatus === "expire" ? "EXPIRED" : "FAILED";
+          await topUp.update({
+            status: newStatus,
+            failureReason: txStatus,
+          });
+        }
+      } catch (statusErr) {
+        // Query gagal (network/404) — kembalikan status DB, jangan block.
+        console.warn(
+          "[Midtrans] Status refresh skipped for",
+          topUp.refNo,
+          statusErr.message,
+        );
+      }
     }
 
     return res.status(200).json({
