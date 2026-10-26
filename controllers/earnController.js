@@ -388,56 +388,76 @@ const claimEarnPosition = async (req, res) => {
     }
 
     /**
-     * Recovery: CLAIMING (job mati/crash) atau FAILED -> ACTIVE.
-     * Conditional update — dua request bersamaan tidak bisa sama-sama
-     * flip; yang kalah dapat 0 row dan berhenti di sini.
+     * Flip ke CLAIMING DI SINI — bukan di worker.
+     * Job diproses async via drainQueue (bisa ~60s); kalau status
+     * dibiarkan ACTIVE selama gap itu, UI menampilkan tombol Claim
+     * aktif lagi padahal job sudah antre. Conditional update juga
+     * men-serialize request bersamaan: yang kalah dapat 0 row.
      */
-    if (position.status !== EARN_STATUS.ACTIVE) {
-      const [flipped] = await EarnPosition.update(
-        { status: EARN_STATUS.ACTIVE },
-        {
-          where: {
-            id: position.id,
-            status: { [Op.in]: [EARN_STATUS.CLAIMING, EARN_STATUS.FAILED] },
+    const prevStatus = position.status;
+    const [flipped] = await EarnPosition.update(
+      { status: EARN_STATUS.CLAIMING },
+      {
+        where: {
+          id: position.id,
+          status: {
+            [Op.in]: [
+              EARN_STATUS.ACTIVE,
+              EARN_STATUS.CLAIMING,
+              EARN_STATUS.FAILED,
+            ],
           },
         },
-      ).catch((dbError) => {
-        console.error("[Earn Claim] Gagal recovery status:", dbError);
-        return [0];
+      },
+    ).catch((dbError) => {
+      console.error("[Earn Claim] Gagal set status CLAIMING:", dbError);
+      return [0];
+    });
+    if (flipped === 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Status position berubah — silakan coba lagi.",
       });
-      if (flipped === 0) {
-        return res.status(409).json({
-          success: false,
-          message: "Status position berubah — silakan coba lagi.",
-        });
-      }
-      await position.reload();
     }
+    await position.reload();
 
     // =====================================================
     // ADD QUEUE
     // =====================================================
 
-    const job = await earnClaimQueue.add(
-      "process-claim",
-      {
-        positionId: position.id,
+    let job;
+    try {
+      job = await earnClaimQueue.add(
+        "process-claim",
+        {
+          positionId: position.id,
 
-        coreId: position.coreId,
-      },
-      {
-        jobId,
+          coreId: position.coreId,
+        },
+        {
+          jobId,
 
-        removeOnComplete: true,
+          removeOnComplete: true,
 
-        /**
-         * Failed job dihapus supaya retry berikutnya (jobId sama)
-         * benar-benar membuat job baru — kalau dibiarkan, BullMQ
-         * mengembalikan job gagal lama dan claim tidak pernah jalan.
-         */
-        removeOnFail: true,
-      },
-    );
+          /**
+           * Failed job dihapus supaya retry berikutnya (jobId sama)
+           * benar-benar membuat job baru — kalau dibiarkan, BullMQ
+           * mengembalikan job gagal lama dan claim tidak pernah jalan.
+           */
+          removeOnFail: true,
+        },
+      );
+    } catch (queueError) {
+      /**
+       * Enqueue gagal -> revert ke status sebelumnya supaya posisi
+       * tidak nyangkut di CLAIMING tanpa job yang memprosesnya.
+       */
+      await EarnPosition.update(
+        { status: prevStatus },
+        { where: { id: position.id, status: EARN_STATUS.CLAIMING } },
+      ).catch(() => {});
+      throw queueError;
+    }
 
     console.log("[Earn Claim] Job queued:", {
       jobId: job.id,
