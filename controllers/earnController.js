@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { Op } = require("sequelize");
 const { earnClaimQueue } = require("../queues/earn-claim.queue");
 const { EarnPosition } = require("../models");
 const { earnQueue } = require("../queues/earn.queue");
@@ -360,20 +361,58 @@ const claimEarnPosition = async (req, res) => {
       });
     }
 
-    // Recovery setelah semua validasi lolos — CLAIMING/FAILED -> ACTIVE
-    if (position.status !== EARN_STATUS.ACTIVE) {
-      try {
-        await position.update({ status: EARN_STATUS.ACTIVE });
-      } catch (dbError) {
-        console.error("[Earn Claim] Gagal recovery status:", dbError);
-      }
-    }
-
     // =====================================================
-    // JOB ID
+    // JOB ID — dedup lintas API/queue memakai id yang sama.
     // =====================================================
 
     const jobId = `claim-${position.id}`;
+
+    /**
+     * CLAIMING dengan job yang masih hidup di queue -> jangan reset
+     * status; claim memang sedang diproses. Return idempotent in-progress.
+     */
+    if (position.status === EARN_STATUS.CLAIMING) {
+      const liveJob = await earnClaimQueue.getJob(jobId).catch(() => null);
+      if (liveJob) {
+        return res.status(200).json({
+          success: true,
+          message: "Claim sedang diproses.",
+          data: {
+            id: position.id,
+            core_id: position.coreId,
+            position_id: position.positionId,
+            status: position.status,
+          },
+        });
+      }
+    }
+
+    /**
+     * Recovery: CLAIMING (job mati/crash) atau FAILED -> ACTIVE.
+     * Conditional update — dua request bersamaan tidak bisa sama-sama
+     * flip; yang kalah dapat 0 row dan berhenti di sini.
+     */
+    if (position.status !== EARN_STATUS.ACTIVE) {
+      const [flipped] = await EarnPosition.update(
+        { status: EARN_STATUS.ACTIVE },
+        {
+          where: {
+            id: position.id,
+            status: { [Op.in]: [EARN_STATUS.CLAIMING, EARN_STATUS.FAILED] },
+          },
+        },
+      ).catch((dbError) => {
+        console.error("[Earn Claim] Gagal recovery status:", dbError);
+        return [0];
+      });
+      if (flipped === 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Status position berubah — silakan coba lagi.",
+        });
+      }
+      await position.reload();
+    }
 
     // =====================================================
     // ADD QUEUE

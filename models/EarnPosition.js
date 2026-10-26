@@ -104,6 +104,16 @@ const EarnPosition = sequelize.define(
     },
 
     /*
+     * Transaction claim — dipisah dari txHash (createEarn) supaya retry
+     * claim bisa resume tx in-flight alih-alih menembak tx kedua.
+     */
+    claimTxHash: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "claim_tx_hash",
+    },
+
+    /*
      * Error terakhir dari worker.
      */
     errorMessage: {

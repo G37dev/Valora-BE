@@ -79,6 +79,8 @@ async function connectDatabase() {
           WHERE idempotency_key IS NOT NULL;
         ALTER TABLE "loan_positions"
           ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE "earn_positions"
+          ADD COLUMN IF NOT EXISTS claim_tx_hash VARCHAR;
       `);
       // Loan V1 — parent dulu baru child (FK order)
       await LoanRiskPolicyVersion.sync();

@@ -95,7 +95,9 @@ const earnClaimWorker = new Worker(
         };
       }
 
-      if (position.status !== EARN_STATUS.ACTIVE) {
+      // CLAIMING diizinkan: status itu marker in-flight milik job ini
+      // sendiri — retry BullMQ mewarisi CLAIMING dari attempt sebelumnya.
+      if (![EARN_STATUS.ACTIVE, EARN_STATUS.CLAIMING].includes(position.status)) {
         throw new Error(
           `Position belum bisa di-claim. Status=${position.status}`,
         );
@@ -273,23 +275,24 @@ const earnClaimWorker = new Worker(
       }
 
       // =====================================================
-      // 11. CLAIMING
+      // 11. CLAIMING — conditional update: hanya flip dari ACTIVE.
+      // Kalau sudah CLAIMING (resume) atau CLAIMED (race), jangan timpa.
       // =====================================================
 
-      await position.update({
-        status: EARN_STATUS.CLAIMING,
-      });
+      const [claimingFlipped] = await EarnPosition.update(
+        { status: EARN_STATUS.CLAIMING },
+        { where: { id: position.id, status: EARN_STATUS.ACTIVE } },
+      );
+
+      await position.reload();
+
+      if (claimingFlipped === 0 && position.status !== EARN_STATUS.CLAIMING) {
+        throw new Error(
+          `Position status berubah saat claim (${position.status}) — abort.`,
+        );
+      }
 
       console.log("[Earn Claim Worker] Status → CLAIMING");
-
-      // =====================================================
-      // 12. SEND CLAIM
-      // =====================================================
-
-      console.log("");
-      console.log("[Earn Claim Worker] ================================");
-      console.log("[Earn Claim Worker] MENGIRIM router.claim()");
-      console.log("[Earn Claim Worker] ================================");
 
       console.log("[Earn Claim Worker] Params:", {
         router: routerAddress,
@@ -299,34 +302,70 @@ const earnClaimWorker = new Worker(
         user: smartAccount.address,
       });
 
-      const claimTxHash = await claimEarnTransaction({
-        tokenAddress,
-        positionId: blockchainPositionId,
-        smartAccount,
-        routerAddress,
-      });
-
-      console.log("[Earn Claim Worker] CLAIM TX:", claimTxHash);
-
       // =====================================================
-      // 13. SAVE CLAIM TX
+      // 12-14. SEND/RESUME CLAIM TX + WAIT RECEIPT
+      //
+      // Exactly-once: bila attempt sebelumnya sudah broadcast tx tapi
+      // crash sebelum receipt diproses, resume tx yang sama via
+      // claim_tx_hash — jangan pernah kirim tx claim kedua.
       // =====================================================
 
-      await position.update({
-        txHash: claimTxHash,
-      });
+      let claimTxHash = position.claimTxHash || null;
+      let receipt = null;
 
-      // =====================================================
-      // 14. WAIT RECEIPT
-      // =====================================================
+      if (claimTxHash) {
+        console.log("[Earn Claim Worker] Resume claim tx:", claimTxHash);
+        try {
+          const prev = await waitForReceipt({
+            client,
+            chain: sepolia,
+            transactionHash: claimTxHash,
+          });
+          if (prev && prev.status === "success") {
+            receipt = prev;
+          } else {
+            // Tx lama reverted -> bersihkan, kirim tx baru di bawah.
+            await position.update({ claimTxHash: null });
+            claimTxHash = null;
+          }
+        } catch (resumeError) {
+          console.log(
+            `[Earn Claim Worker] resume tx ${claimTxHash} gagal dicek (${resumeError.message}) — kirim tx baru.`,
+          );
+          claimTxHash = null;
+        }
+      }
 
-      console.log("[Earn Claim Worker] Menunggu receipt...");
+      if (!claimTxHash) {
+        console.log("");
+        console.log("[Earn Claim Worker] ================================");
+        console.log("[Earn Claim Worker] MENGIRIM router.claim()");
+        console.log("[Earn Claim Worker] ================================");
 
-      const receipt = await waitForReceipt({
-        client,
-        chain: sepolia,
-        transactionHash: claimTxHash,
-      });
+        claimTxHash = await claimEarnTransaction({
+          tokenAddress,
+          positionId: blockchainPositionId,
+          smartAccount,
+          routerAddress,
+        });
+
+        console.log("[Earn Claim Worker] CLAIM TX:", claimTxHash);
+
+        await position.update({
+          txHash: claimTxHash,
+          claimTxHash,
+        });
+      }
+
+      if (!receipt) {
+        console.log("[Earn Claim Worker] Menunggu receipt...");
+
+        receipt = await waitForReceipt({
+          client,
+          chain: sepolia,
+          transactionHash: claimTxHash,
+        });
+      }
 
       if (!receipt) {
         throw new Error(`Receipt claim tidak ditemukan. tx=${claimTxHash}`);
