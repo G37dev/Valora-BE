@@ -202,10 +202,11 @@ async function ensureEscrowAllowance(position, ownerAddress, raw) {
   if (!receipt || receipt.status !== "success")
     throw new Error(`approve: tx reverted (${txHash})`);
 
-  const after = await earn.getTokenAllowance({
+  const after = await earn.waitForAllowance({
     tokenAddress,
     owner: ownerAddress,
     spender: escrow,
+    required: raw,
   });
   if (BigInt(after) < raw)
     throw new Error(

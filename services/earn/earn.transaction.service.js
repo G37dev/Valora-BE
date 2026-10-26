@@ -9,6 +9,7 @@ const {
   client,
   getTokenContract,
   getTokenAllowance,
+  waitForAllowance,
   getEarnPoolAddress,
   getRouterContract,
 } = require("./earn.blockchain.service");
@@ -81,10 +82,11 @@ const ensureTokenAllowance = async ({
     throw new Error(`Approve gagal/reverted. tx=${txHash}`);
   }
 
-  const newAllowance = await getTokenAllowance({
+  const newAllowance = await waitForAllowance({
     tokenAddress,
     owner,
     spender: poolAddress,
+    required: amount,
   });
 
   console.log("[Earn TX] New allowance:", newAllowance.toString());

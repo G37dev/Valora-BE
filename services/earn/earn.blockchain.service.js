@@ -140,6 +140,37 @@ const getTokenAllowance = async ({ tokenAddress, owner, spender }) => {
   return BigInt(allowance);
 };
 
+/*
+ * Verifikasi allowance setelah approve terkonfirmasi.
+ *
+ * Read-after-write race: tiap readContract bisa nginjek RPC provider
+ * yang beda (round-robin di utils/chain), dan provider bisa telat
+ * sync 1-2 block — read one-shot sering balikin nilai STALE walau
+ * approve-nya sudah sukses on-chain. Poll sampai nilai >= required
+ * atau timeout.
+ */
+const waitForAllowance = async ({
+  tokenAddress,
+  owner,
+  spender,
+  required,
+  timeoutMs = 15000,
+  intervalMs = 1500,
+}) => {
+  const deadline = Date.now() + timeoutMs;
+  let last = 0n;
+  for (;;) {
+    try {
+      last = BigInt(await getTokenAllowance({ tokenAddress, owner, spender }));
+      if (last >= BigInt(required)) return last;
+    } catch {
+      /* read transient — coba lagi di interval berikutnya */
+    }
+    if (Date.now() >= deadline) return last;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+};
+
 /**
  * Minimum callGasLimit untuk sponsored UserOp.
  *
@@ -383,6 +414,7 @@ module.exports = {
   getRouterContract,
   getTokenDecimals,
   getTokenAllowance,
+  waitForAllowance,
   getUserSmartAccount,
   getPoolRouterAddress,
   getPoolContract,
