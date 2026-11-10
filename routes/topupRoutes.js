@@ -3,10 +3,10 @@ const express = require("express");
 const router = express.Router();
 
 const midtransController = require("../controllers/midtransController");
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 
 // Create Top Up
-router.post("/midtrans", verifyToken, midtransController.createMidtransTopUp);
+router.post("/midtrans", verifyToken, requireTxAuth, midtransController.createMidtransTopUp);
 
 // Midtrans Webhook
 router.post("/midtrans/backend", midtransController.handleMidtransNotification);

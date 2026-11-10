@@ -1,5 +1,5 @@
 const express = require("express");
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 const {
   getConfig,
   quote,
@@ -22,11 +22,11 @@ router.post("/quote", quote);
 
 // Lifecycle (butuh JWT; coreId diambil dari token)
 router.get("/", verifyToken, listPlans);
-router.post("/", verifyToken, createRequest);
+router.post("/", verifyToken, requireTxAuth, createRequest);
 router.get("/:plan_id", verifyToken, getPlanDetail);
-router.post("/:plan_id/pay", verifyToken, pay);
-router.post("/:plan_id/cancel", verifyToken, cancel);
-router.post("/:plan_id/restructure", verifyToken, restructure);
-router.post("/:plan_id/claim", verifyToken, claim);
+router.post("/:plan_id/pay", verifyToken, requireTxAuth, pay);
+router.post("/:plan_id/cancel", verifyToken, requireTxAuth, cancel);
+router.post("/:plan_id/restructure", verifyToken, requireTxAuth, restructure);
+router.post("/:plan_id/claim", verifyToken, requireTxAuth, claim);
 
 module.exports = router;

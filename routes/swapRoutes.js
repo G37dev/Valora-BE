@@ -5,10 +5,10 @@ const {
   getUserSwaps,
   getTokenBalance,
 } = require("../controllers/swapController");
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 
 const router = express.Router();
-router.post("/", verifyToken, createSwap);
+router.post("/", verifyToken, requireTxAuth, createSwap);
 router.get("/balance/:asset", verifyToken, getTokenBalance);
 router.get("/", verifyToken, getUserSwaps);
 router.get("/:swapId", verifyToken, getSwapStatus);

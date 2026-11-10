@@ -137,6 +137,21 @@ function generatePreAuthToken(coreId, tenantId) {
   });
 }
 
+/*
+ * Tiket otorisasi transaksi — dikeluarkan setelah user
+ * lolos 2FA (TOTP/passkey). Endpoint transaksi sensitif
+ * memvalidasi scope ini lewat requireTxAuth middleware.
+ */
+function issueTxTicket(coreId) {
+  return jwt.sign(
+    { coreId, scope: "tx_auth", jti: crypto.randomUUID() },
+    JWT_SECRET,
+    { expiresIn: "5m" },
+  );
+}
+
+exports.issueTxTicket = issueTxTicket;
+
 // ============================================================================
 // HELPER 3: Pengecekan 2FA
 // ============================================================================
@@ -662,7 +677,7 @@ exports.verifyTransaction2FA = async (req, res) => {
         .json({ error: "Kode Authenticator salah atau kadaluarsa." });
     }
 
-    res.json({ message: "2FA Transaksi Berhasil!" });
+    res.json({ message: "2FA Transaksi Berhasil!", txTicket: issueTxTicket(coreId) });
   } catch (error) {
     console.error("Verify tx 2FA error:", error);
     res.status(500).json({ error: "Gagal verifikasi." });

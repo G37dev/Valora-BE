@@ -5,7 +5,7 @@ const router = express.Router();
 const transactionController = require("../controllers/transactionController");
 const midtransController = require("../controllers/midtransController");
 
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 const rateLimit = require("../middleware/rateLimit");
 
 // Withdraw: max 10 request / 5 menit per IP — endpoint ini memindahkan dana.
@@ -16,7 +16,7 @@ router.get("/:coreId", verifyToken, transactionController.getUserTransactions);
 router.post(
   "/withdraw",
   withdrawLimiter,
-  verifyToken,
+  verifyToken, requireTxAuth,
   transactionController.requestWithdraw,
 );
 

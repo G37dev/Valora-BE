@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 const {
   getUserEarnPositions,
   recordEarnPosition,
@@ -15,9 +15,9 @@ router.get("/config", verifyToken, getEarnConfig);
 router.get("/positions/:core_id", verifyToken, getUserEarnPositions);
 
 // Endpoint untuk mencatat posisi earn ke database
-router.post("/positions", verifyToken, recordEarnPosition);
+router.post("/positions", verifyToken, requireTxAuth, recordEarnPosition);
 
 // Endpoint untuk melakukan claim posisi earn
-router.post("/claim/:position_id", verifyToken, claimEarnPosition);
+router.post("/claim/:position_id", verifyToken, requireTxAuth, claimEarnPosition);
 
 module.exports = router;

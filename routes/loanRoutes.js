@@ -30,7 +30,7 @@
 
 const express = require("express");
 const crypto = require("crypto");
-const { verifyToken } = require("../middlewares/auth");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 const c = require("../controllers/loanController");
 const clock = require("../services/loan/loan.clock");
 
@@ -93,11 +93,11 @@ router.post("/admin/test/tick", testAuth, c.testRunTick);
 
 // User lifecycle
 router.get("/", verifyToken, c.listPositions);
-router.post("/", verifyToken, c.openPosition);
+router.post("/", verifyToken, requireTxAuth, c.openPosition);
 router.get("/:position_id", verifyToken, c.getPositionDetail);
-router.post("/:position_id/drawdown", verifyToken, c.drawdown);
+router.post("/:position_id/drawdown", verifyToken, requireTxAuth, c.drawdown);
 router.post("/:position_id/repayment/quote", verifyToken, c.quoteRepayment);
-router.post("/:position_id/repay", verifyToken, c.repay);
-router.post("/:position_id/collateral/add", verifyToken, c.topUp);
+router.post("/:position_id/repay", verifyToken, requireTxAuth, c.repay);
+router.post("/:position_id/collateral/add", verifyToken, requireTxAuth, c.topUp);
 
 module.exports = router;

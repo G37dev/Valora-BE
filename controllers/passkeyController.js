@@ -352,6 +352,19 @@ exports.verifyAuth = async (req, res) => {
     });
     await passkey.record.save();
 
+    /*
+     * Session penuh (bukan pre_auth) = verifikasi untuk
+     * transaksi, bukan login — keluarkan txTicket saja,
+     * jangan terbitkan session baru.
+     */
+    if (decoded.scope !== "pre_auth") {
+      const { issueTxTicket } = require("./authController");
+      return res.json({
+        message: "Verifikasi passkey berhasil!",
+        txTicket: issueTxTicket(coreId),
+      });
+    }
+
     const authData = await generateAuthResponse(coreId);
     res.json({ message: "Passkey login sukses!", ...authData });
   } catch (error) {
