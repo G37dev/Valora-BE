@@ -219,13 +219,20 @@ function topupBankInfo(itx, topup) {
 async function buildTopupDetail(itx, topup) {
   const { bank, vaNumber, method } = topupBankInfo(itx, topup);
   const amount = dec(topup?.amountIdr ?? topup?.amount_idr ?? itx.amount);
+  const st = normStatus(itx.status);
+  const statusText =
+    {
+      COMPLETED: "Your deposit completed",
+      PENDING: "Your deposit is in progress",
+      FAILED: "Your deposit failed",
+      EXPIRED: "Your deposit expired",
+      CANCELLED: "Your deposit was cancelled",
+      REFUNDED: "Your deposit was refunded",
+    }[st] || "Your deposit is in progress";
   return base(itx, {
     kind: "IDR_DEPOSIT",
     title: "Deposit",
-    statusText:
-      normStatus(itx.status) === "COMPLETED"
-        ? "Your deposit completed"
-        : "Your deposit is in progress",
+    statusText,
     refNumber:
       topup?.refNo ||
       topup?.ref_no ||
