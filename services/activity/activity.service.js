@@ -455,6 +455,18 @@ async function resolveActivityDetail({ coreId, refId, currentBlock = 0 }) {
     return buildEarnDetail(pos, m && m[2] === "r" ? "claim" : "create");
   }
 
+  if (ref.startsWith("topup-")) {
+    const topup = await TopUp.findOne({
+      where: { id: ref.slice(6), coreId },
+    });
+    if (!topup) throw new Error("Transaksi tidak ditemukan");
+    const itx = await InternalTransaction.findOne({
+      where: { topUpId: topup.id, coreId },
+      order: [["created_at", "DESC"]],
+    });
+    return buildTopupDetail(itx || topup, topup);
+  }
+
   if (ref.startsWith("itx-")) {
     const itx = await InternalTransaction.findOne({
       where: { id: ref.slice(4), coreId },
