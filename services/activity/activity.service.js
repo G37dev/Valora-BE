@@ -114,6 +114,24 @@ async function buildCryptoDetail(tx, currentBlock) {
 
   const status = normStatus(tx.status);
   const title = TYPE_TITLE[txType] || (isDeposit ? "Deposit" : "Withdraw");
+  const LABELS = {
+    DEPOSIT: { cp: "Deposit from", amount: "Deposit Amount", total: "Total Credited" },
+    COLLATERAL_RELEASE: {
+      cp: "Released From",
+      amount: "Released Amount",
+      total: "Total Released",
+    },
+    LIQUIDATION_REFUND: {
+      cp: "Refund From",
+      amount: "Refund Amount",
+      total: "Total Refunded",
+    },
+  };
+  const labels = LABELS[txType] || {
+    cp: isDeposit ? "Deposit from" : "Withdraw To",
+    amount: isDeposit ? "Deposit Amount" : "Withdraw Amount",
+    total: isDeposit ? "Total Credited" : "Total Debited",
+  };
   return base(tx, {
     kind: "CRYPTO",
     subKind: isDeposit ? "DEPOSIT" : "WITHDRAW",
@@ -131,10 +149,11 @@ async function buildCryptoDetail(tx, currentBlock) {
     amount: amount.toFixed(),
     fee: isDeposit ? "0" : fee.toFixed(),
     counterparty: {
-      label: isDeposit ? "Deposit from" : "Withdraw To",
+      label: labels.cp,
       value: isDeposit ? tx.from_address || null : tx.destination_address,
     },
-    totalLabel: isDeposit ? "Total Credited" : "Total Debited",
+    amountLabel: labels.amount,
+    totalLabel: labels.total,
     total: isDeposit ? amount.toFixed() : amount.plus(fee).toFixed(),
     confirmations,
     txHash: tx.tx_hash,
@@ -169,8 +188,8 @@ function buildSwapDetail(s) {
     toAsset: s.toAsset,
     toAssetName: ASSET_NAMES[upper(s.toAsset)] || s.toAsset,
     toAmount: dec(s.receiveAmount || s.toAmount).toFixed(),
-    rate: rate ? `1 ${s.fromAsset} = ${rate.toFixed(8)} ${s.toAsset}` : null,
-    fee: feeFromAsset.toFixed(8),
+    rate: rate ? rate.toFixed() : null,
+    fee: feeFromAsset.toFixed(),
     feeAsset: s.fromAsset,
     settlementStatus: normStatus(s.status),
     txHash: s.withdrawalTxHash || s.depositTxHash || null,
