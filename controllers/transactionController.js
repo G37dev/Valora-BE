@@ -1,9 +1,20 @@
 require("dotenv").config();
-const { Wallet, Transaction, Swap, InternalTransaction } = require("../models");
+const {
+  Wallet,
+  Transaction,
+  Swap,
+  InternalTransaction,
+  TopUp,
+  InstallmentPayment,
+  InstallmentPlan,
+  LoanRepayment,
+  LoanPosition,
+  EarnPosition,
+} = require("../models");
 const {
   createThirdwebClient,
   getContract,
-  sendTransaction,
+  sendBatchTransaction,
 } = require("thirdweb");
 const { getRpcClient } = require("thirdweb/rpc");
 const { cachedBlockNumber } = require("../services/rpcCache");
@@ -28,6 +39,32 @@ const TOKEN_ADDRESSES = {
   XAUT: process.env.XAUT_DUMMY_CONTRACT_ADDRESS,
   GOLD: process.env.GOLD_DUMMY_CONTRACT_ADDRESS,
 };
+
+// Fee withdraw per aset (unit token) — mirror tabel mobile; dipotong dari
+// gross amount lalu ditransfer ke Fee Treasury Safe.
+const WITHDRAWAL_FEES = {
+  USDT: "1",
+  USDC: "1",
+  XAUT: "0.0003",
+  GOLD: "1",
+};
+const DEFAULT_WITHDRAWAL_FEE = "1";
+const FEE_TREASURY = process.env.FEE_TREASURY_SAFE_ADDRESS;
+
+// Konversi string desimal -> raw unit BigInt (10^decimals) untuk hitungan
+// fee/net yang presisi tanpa float.
+function decimalToRaw(str, decimals) {
+  const [intPart, fracPart = ""] = String(str).split(".");
+  const frac = (fracPart + "0".repeat(decimals)).slice(0, decimals);
+  return BigInt((intPart || "0") + frac);
+}
+
+function rawToDecimal(raw, decimals) {
+  const s = raw.toString().padStart(decimals + 1, "0");
+  const intPart = s.slice(0, -decimals) || "0";
+  const frac = s.slice(-decimals).replace(/0+$/, "");
+  return frac ? `${intPart}.${frac}` : intPart;
+}
 
 // Cache decimals() per kontrak — nilai immutable on-chain.
 const tokenDecimalsCache = new Map();
@@ -108,6 +145,7 @@ exports.getUserTransactions = async (req, res) => {
         }
 
         return {
+          id: `tx-${tx.id}`,
           tx_hash: tx.tx_hash,
           type: tx.type,
           asset: tx.asset,
@@ -117,6 +155,7 @@ exports.getUserTransactions = async (req, res) => {
           requiredConfirmations: REQUIRED_CONFIRMATIONS,
           createdAt: tx.createdAt,
           destination: tx.destination_address || null,
+          from: tx.from_address || null,
         };
       }),
     );
@@ -154,6 +193,38 @@ exports.getUserTransactions = async (req, res) => {
       createdAt: s.created_at || s.createdAt,
     }));
 
+    // Earn rows sudah masuk lewat Transaction (type EARN_DEPOSIT/
+    // EARN_CLAIM dari earnListener) — nggak perlu merge terpisah.
+    // Subtitle "VVLR Earn • {term}D" di-resolve via tx_hash.
+    const earnHashes = formattedData
+      .filter((r) => String(r.type || "").startsWith("EARN"))
+      .map((r) => r.tx_hash);
+    const earnPositions = earnHashes.length
+      ? await EarnPosition.findAll({
+          where: {
+            coreId,
+            [require("sequelize").Op.or]: [
+              { txHash: earnHashes },
+              { claimTxHash: earnHashes },
+            ],
+          },
+        })
+      : [];
+    const earnByHash = new Map(
+      earnPositions.flatMap((p) => [
+        [String(p.txHash || "").toLowerCase(), { p, claim: false }],
+        [String(p.claimTxHash || "").toLowerCase(), { p, claim: true }],
+      ]),
+    );
+    for (const row of formattedData) {
+      if (!String(row.type || "").startsWith("EARN")) continue;
+      const hit = earnByHash.get(String(row.tx_hash || "").toLowerCase());
+      if (hit?.p) {
+        row.subtitle = `VVLR Earn • ${hit.p.termCode}D`;
+        row.earnPositionId = hit.p.id;
+      }
+    }
+
     const inferInternalType = (t) => {
       const ref = String(t.reference || "").toUpperCase();
       const desc = String(t.description || "").toUpperCase();
@@ -166,18 +237,89 @@ exports.getUserTransactions = async (req, res) => {
       return "TRANSFER";
     };
 
-    const internalRows = internalTxs.map((t) => ({
-      id: `itx-${t.id}`,
-      type: inferInternalType(t),
-      asset: t.asset,
-      amount: t.amount,
-      direction: t.type, // CREDIT / DEBIT
-      status: t.status,
-      confirmations: 0,
-      requiredConfirmations: 0,
-      description: t.description || null,
-      createdAt: t.created_at || t.createdAt,
-    }));
+    // ---- Subtitle lookups (batch, bukan N+1) -------------------------
+    const itxIds = internalTxs.map((t) => t.id);
+    const instPayments = itxIds.length
+      ? await InstallmentPayment.findAll({
+          where: { internal_transaction_id: itxIds },
+          include: [{ model: InstallmentPlan, as: "plan", required: false }],
+        })
+      : [];
+    const instByItx = new Map(
+      instPayments.map((p) => [p.internal_transaction_id, p]),
+    );
+
+    const topupIds = internalTxs.map((t) => t.topUpId).filter(Boolean);
+    const topups = topupIds.length
+      ? await TopUp.findAll({ where: { id: topupIds } })
+      : [];
+    const topupById = new Map(topups.map((t) => [String(t.id), t]));
+
+    const loanRepayKeys = internalTxs
+      .map((t) =>
+        String(t.reference || "").match(/^LOAN-REPAY-([0-9a-fA-F-]{36})-(.+)$/),
+      )
+      .filter(Boolean);
+    const loanRepayments = loanRepayKeys.length
+      ? await LoanRepayment.findAll({
+          where: {
+            positionId: loanRepayKeys.map((m) => m[1]),
+            idempotencyKey: loanRepayKeys.map((m) => m[2]),
+          },
+        })
+      : [];
+    const loanRepayByKey = new Map(
+      loanRepayments.map((r) => [`${r.positionId}:${r.idempotencyKey}`, r]),
+    );
+    const loanPositions = loanRepayments.length
+      ? await LoanPosition.findAll({
+          where: { id: loanRepayments.map((r) => r.positionId) },
+        })
+      : [];
+    const loanPosById = new Map(loanPositions.map((p) => [String(p.id), p]));
+
+    const internalRows = internalTxs.map((t) => {
+      const ref = String(t.reference || "");
+      const instP = instByItx.get(t.id);
+      const loanM = ref.match(/^LOAN-REPAY-([0-9a-fA-F-]{36})-(.+)$/);
+      const repay = loanM
+        ? loanRepayByKey.get(`${loanM[1]}:${loanM[2]}`)
+        : null;
+      const pos = repay ? loanPosById.get(String(repay.positionId)) : null;
+      const topup = t.topUpId ? topupById.get(String(t.topUpId)) : null;
+
+      let subtitle = null;
+      if (instP?.plan?.plan_type) {
+        subtitle =
+          instP.plan.plan_type === "FLEXIBLE" ? "Flexible Plan" : "Standard Plan";
+      } else if (pos?.collateralAsset) {
+        subtitle = `${pos.collateralAsset} Pawn`;
+      } else if (topup) {
+        const notif = t.metadata?.notification || {};
+        const va = Array.isArray(notif.va_numbers)
+          ? notif.va_numbers[0]
+          : null;
+        subtitle = va?.bank
+          ? `From ${String(va.bank).toUpperCase()} • VA`
+          : "IDR Top Up";
+      } else if (ref.startsWith("LOAN-DISB")) {
+        subtitle = "Loan Disbursement";
+      }
+
+      return {
+        id: `itx-${t.id}`,
+        type: inferInternalType(t),
+        asset: t.asset,
+        amount: t.amount,
+        direction: t.type, // CREDIT / DEBIT
+        status: t.status,
+        confirmations: 0,
+        requiredConfirmations: 0,
+        description: t.description || null,
+        subtitle,
+        createdAt: t.created_at || t.createdAt,
+      };
+    });
 
     const merged = [...formattedData, ...swapRows, ...internalRows].sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
@@ -253,6 +395,27 @@ exports.requestWithdraw = async (req, res) => {
       return res.status(400).json({ success: false, message: precisionError });
     }
 
+    // `amount` yang dikirim client = gross (total yang didebit dari wallet
+    // user). Fee dipotong dari gross; sisanya (net) ditransfer ke tujuan.
+    const feeStr = WITHDRAWAL_FEES[asset.toUpperCase()] ?? DEFAULT_WITHDRAWAL_FEE;
+    if (!FEE_TREASURY) {
+      console.error("❌ [CONFIG] FEE_TREASURY_SAFE_ADDRESS belum di-set.");
+      return res.status(500).json({
+        success: false,
+        message: "Konfigurasi fee belum tersedia. Coba lagi nanti.",
+      });
+    }
+    const grossRaw = decimalToRaw(cleanAmount, tokenDecimals);
+    const feeRaw = decimalToRaw(feeStr, tokenDecimals);
+    const netRaw = grossRaw - feeRaw;
+    if (netRaw <= 0n) {
+      return res.status(400).json({
+        success: false,
+        message: `Jumlah harus lebih besar dari fee withdraw (${feeStr} ${asset.toUpperCase()}).`,
+      });
+    }
+    const netAmount = rawToDecimal(netRaw, tokenDecimals);
+
     // Idempotency: retry dengan key yang sama mengembalikan hasil
     // yang sudah ada, tanpa broadcast ulang.
     if (idempotencyKey) {
@@ -277,6 +440,7 @@ exports.requestWithdraw = async (req, res) => {
             status: existing.status,
             asset: existing.asset,
             amount: existing.amount,
+            fee: existing.fee,
             destinationAddress: trimmedDest,
           },
         });
@@ -316,7 +480,8 @@ exports.requestWithdraw = async (req, res) => {
       tx_hash: "PENDING_" + Date.now(),
       type: "WITHDRAW",
       asset: asset.toUpperCase(),
-      amount: cleanAmount,
+      amount: netAmount,
+      fee: feeStr,
       status: "PENDING",
       idempotency_key: idempotencyKey ? String(idempotencyKey) : null,
       destination_address: trimmedDest,
@@ -333,7 +498,7 @@ exports.requestWithdraw = async (req, res) => {
     try {
       console.log("----------------------------------------");
       console.log(
-        `🚀 [WITHDRAW START] Memproses ${amount} ${asset} dari Smart Wallet ${userWallet.address} ke ${destinationAddress}`,
+        `🚀 [WITHDRAW START] Memproses ${cleanAmount} ${asset} (net ${netAmount} + fee ${feeStr}) dari Smart Wallet ${userWallet.address} ke ${destinationAddress}`,
       );
 
       // Ambil objek kontrak token ERC-20
@@ -344,13 +509,23 @@ exports.requestWithdraw = async (req, res) => {
       });
       console.log("✅ [STEP A] Kontrak token berhasil diinisialisasi.");
 
-      // Siapkan parameter transfer token
-      const tx = transfer({
-        contract,
-        to: trimmedDest,
-        amount: cleanAmount,
-      });
-      console.log("✅ [STEP B] Payload transfer ERC-20 berhasil disiapkan.");
+      // Batch 2 transfer dalam 1 UserOp: net ke tujuan + fee ke Fee
+      // Treasury — atomik, satu tx hash.
+      const transferTxs = [
+        transfer({
+          contract,
+          to: trimmedDest,
+          amount: netAmount,
+        }),
+        transfer({
+          contract,
+          to: FEE_TREASURY,
+          amount: feeStr,
+        }),
+      ];
+      console.log(
+        "✅ [STEP B] Payload transfer ERC-20 (net + fee) berhasil disiapkan.",
+      );
 
       // Konfigurasi Smart Wallet (AA) dengan Paymaster (gasless: true)
       const userSmartWalletConfig = smartWallet({
@@ -380,10 +555,10 @@ exports.requestWithdraw = async (req, res) => {
 
       // Eksekusi pengiriman transaksi sekali jalan menggunakan Smart Account
       console.log(
-        "⏳ [STEP E] Mengirim transaksi ke jaringan blockchain via sendTransaction...",
+        "⏳ [STEP E] Mengirim batch transaksi ke jaringan blockchain via sendBatchTransaction...",
       );
-      const txResult = await sendTransaction({
-        transaction: tx,
+      const txResult = await sendBatchTransaction({
+        transactions: transferTxs,
         account: userSmartAccount,
       });
 
@@ -411,7 +586,9 @@ exports.requestWithdraw = async (req, res) => {
         data: {
           txHash: realTxHash,
           asset: asset.toUpperCase(),
-          amount: cleanAmount,
+          amount: netAmount,
+          fee: feeStr,
+          grossAmount: cleanAmount,
           destinationAddress: trimmedDest,
         },
       });
@@ -438,5 +615,40 @@ exports.requestWithdraw = async (req, res) => {
       message: "Terjadi kesalahan pada server saat memproses withdraw.",
       error: error.message,
     });
+  }
+};
+
+// @desc    Detail satu row activity (dipakai bottom sheet Activity)
+// @route   GET /api/transactions/:coreId/detail/:refId
+exports.getTransactionDetail = async (req, res) => {
+  try {
+    const { coreId, refId } = req.params;
+    if (!coreId || !refId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "coreId dan refId wajib diisi." });
+    }
+    if (req.user && req.user.coreId && req.user.coreId !== coreId) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    const {
+      resolveActivityDetail,
+    } = require("../services/activity/activity.service");
+
+    let currentBlock = 0;
+    try {
+      const rpcRequest = getRpcClient({ client, chain: sepolia });
+      currentBlock = await cachedBlockNumber(rpcRequest);
+    } catch (err) {
+      console.error("[TX DETAIL] block fetch gagal:", err.message);
+    }
+
+    const detail = await resolveActivityDetail({ coreId, refId, currentBlock });
+    return res.status(200).json({ success: true, data: detail });
+  } catch (error) {
+    const msg = error.message || "Gagal mengambil detail transaksi";
+    const code = /tidak ditemukan/.test(msg) ? 404 : 400;
+    return res.status(code).json({ success: false, message: msg });
   }
 };

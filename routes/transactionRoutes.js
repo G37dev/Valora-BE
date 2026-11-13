@@ -13,6 +13,12 @@ const withdrawLimiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 10 });
 
 router.get("/:coreId", verifyToken, transactionController.getUserTransactions);
 
+router.get(
+  "/:coreId/detail/:refId",
+  verifyToken,
+  transactionController.getTransactionDetail,
+);
+
 router.post(
   "/withdraw",
   withdrawLimiter,

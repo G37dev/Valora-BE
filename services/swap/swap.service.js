@@ -171,14 +171,22 @@ async function calculateSwapQuote({
   } else {
     const tokenDecimals = await getAssetDecimals(toAsset);
 
+    // priceIdr XAUT disimpan per gram, tapi token XAUT = 1 troy ounce.
+    // Konversi ke harga per token supaya output dalam unit XAUT.
+    const toPricePerToken =
+      toAsset === "XAUT" ? toPriceIdr.mul(XAUT_GRAMS) : toPriceIdr;
+
     grossReceiveAmount = floorDecimal(
-      grossValueIdr.div(toPriceIdr),
+      grossValueIdr.div(toPricePerToken),
       tokenDecimals,
     );
 
-    feeAmount = floorDecimal(feeAmountIdr.div(toPriceIdr), tokenDecimals);
+    feeAmount = floorDecimal(feeAmountIdr.div(toPricePerToken), tokenDecimals);
 
-    receiveAmount = floorDecimal(netValueIdr.div(toPriceIdr), tokenDecimals);
+    receiveAmount = floorDecimal(
+      netValueIdr.div(toPricePerToken),
+      tokenDecimals,
+    );
   }
 
   if (receiveAmount.lte(0)) {

@@ -101,6 +101,62 @@ const expectThrow = async (name, fn, match) => {
     );
     check("USDT→USDC fee in to-asset", q.feeAmount.gt(0));
   }
+  {
+    // VVL-001: XAUT priceIdr disimpan per gram, output harus oz (x31.1035)
+    const pG = await price("GOLD"),
+      pX = await price("XAUT");
+    const q = await svc.calculateSwapQuote({
+      fromAmount: "0.003",
+      fromPriceIdr: pG,
+      toPriceIdr: pX,
+      fromAsset: "GOLD",
+      toAsset: "XAUT",
+    });
+    const net = new Decimal("0.003")
+      .mul(pG)
+      .mul(new Decimal(1).sub(FEE));
+    const exp = net
+      .div(pX.mul(XAUT_G))
+      .mul(new Decimal(10).pow(6))
+      .floor()
+      .div(new Decimal(10).pow(6));
+    check(
+      "GOLD→XAUT receive = floor(net/(toPrice*31.1035), 6dec)",
+      q.receiveAmount.eq(exp),
+      `recv=${q.receiveAmount}`,
+    );
+    const gramsAsOz = net.div(pX);
+    check(
+      "GOLD→XAUT ~31x lebih kecil dari gram-unit",
+      q.receiveAmount.lt(gramsAsOz.div(30)),
+      `recv=${q.receiveAmount} gramsAsOz=${gramsAsOz.toFixed(4)}`,
+    );
+  }
+  {
+    const pX = await price("XAUT"),
+      pG = await price("GOLD");
+    const q = await svc.calculateSwapQuote({
+      fromAmount: "0.001",
+      fromPriceIdr: pX,
+      toPriceIdr: pG,
+      fromAsset: "XAUT",
+      toAsset: "GOLD",
+    });
+    const net = new Decimal("0.001")
+      .mul(XAUT_G)
+      .mul(pX)
+      .mul(new Decimal(1).sub(FEE));
+    const exp = net
+      .div(pG)
+      .mul(new Decimal(10).pow(6))
+      .floor()
+      .div(new Decimal(10).pow(6));
+    check(
+      "XAUT→GOLD receive = floor(net/toPrice, 6dec)",
+      q.receiveAmount.eq(exp),
+      `recv=${q.receiveAmount}`,
+    );
+  }
 
   console.log("== Tiny/zero amount");
   await expectThrow(

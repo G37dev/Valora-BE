@@ -74,6 +74,10 @@ async function connectDatabase() {
           ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR;
         ALTER TABLE "Transactions"
           ADD COLUMN IF NOT EXISTS destination_address VARCHAR;
+        ALTER TABLE "Transactions"
+          ADD COLUMN IF NOT EXISTS fee VARCHAR;
+        ALTER TABLE "Transactions"
+          ADD COLUMN IF NOT EXISTS from_address VARCHAR;
         CREATE UNIQUE INDEX IF NOT EXISTS transactions_idempotency_key_uq
           ON "Transactions"(idempotency_key)
           WHERE idempotency_key IS NOT NULL;

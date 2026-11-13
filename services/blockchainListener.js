@@ -110,6 +110,7 @@ const createDepositTransaction = async ({
   blockNumber,
   tokenDecimals,
   type = "DEPOSIT",
+  fromAddress = null,
 }) => {
   const formattedAmount = toTokens(value, tokenDecimals);
   return Transaction.create({
@@ -120,6 +121,7 @@ const createDepositTransaction = async ({
     amount: formattedAmount,
     tx_block_number: Number(blockNumber),
     status: "PENDING",
+    from_address: fromAddress,
   });
 };
 const handleTransferEvent = async ({ event, token }) => {
@@ -200,6 +202,7 @@ const handleTransferEvent = async ({ event, token }) => {
     blockNumber,
     tokenDecimals,
     type: txType,
+    fromAddress: from,
   });
   console.log(`[Blockchain] ${txType} ${token.name} tersimpan`, {
     id: transaction.id,
