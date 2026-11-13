@@ -201,12 +201,13 @@ function buildSwapDetail(s) {
 // InternalTransaction -> topup / installment / loan / generic
 // ---------------------------------------------------------------------
 function topupBankInfo(itx, topup) {
-  const notif =
-    itx?.metadata?.notification || topup?.raw_response?.notification || {};
+  const rawResp = topup?.rawResponse || topup?.raw_response || {};
+  const notif = itx?.metadata?.notification || rawResp.notification || {};
   const va = Array.isArray(notif.va_numbers) ? notif.va_numbers[0] : null;
   const bank = (va?.bank || notif.bank || "").toUpperCase() || null;
   const vaNumber = va?.va_number || notif.va_number || null;
   const method =
+    topup?.paymentMethod ||
     topup?.payment_method ||
     (notif.payment_type === "bank_transfer"
       ? "Virtual Account"
@@ -217,7 +218,7 @@ function topupBankInfo(itx, topup) {
 
 async function buildTopupDetail(itx, topup) {
   const { bank, vaNumber, method } = topupBankInfo(itx, topup);
-  const amount = dec(topup?.amount_idr ?? itx.amount);
+  const amount = dec(topup?.amountIdr ?? topup?.amount_idr ?? itx.amount);
   return base(itx, {
     kind: "IDR_DEPOSIT",
     title: "Deposit",
@@ -225,7 +226,12 @@ async function buildTopupDetail(itx, topup) {
       normStatus(itx.status) === "COMPLETED"
         ? "Your deposit completed"
         : "Your deposit is in progress",
-    refNumber: topup?.ref_no || topup?.provider_payment_id || null,
+    refNumber:
+      topup?.refNo ||
+      topup?.ref_no ||
+      topup?.providerPaymentId ||
+      topup?.provider_payment_id ||
+      null,
     asset: "IDR",
     assetName: "IDR",
     amount: amount.toFixed(0),
