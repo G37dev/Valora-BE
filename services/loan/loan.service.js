@@ -238,6 +238,12 @@ async function quoteOpen({ coreId, body, now }) {
   const violations = [];
   if (gross.lt(policy.rules.MIN_INITIAL_GROSS_IDR))
     violations.push("BELOW_MINIMUM_GROSS");
+  if (ltv != null && ltv < (risk.minInitialLtvBps ?? 0)) {
+    if (policy.rules.MIN_INITIAL_LTV_ENABLED !== false)
+      violations.push("PAWN_INITIAL_LTV_BELOW_MIN");
+  }
+  if (ltv != null && ltv > risk.initialLtvBps)
+    violations.push("PAWN_INITIAL_LTV_ABOVE_MAX");
   if (gross.gt(cap.ltvCap)) violations.push("EXCEEDS_LTV_CAPACITY");
   if (gross.gt(cap.customerCap)) violations.push("EXCEEDS_BORROWER_CAP");
   if (gross.gt(cap.poolCap)) violations.push("EXCEEDS_POOL_CAPACITY");
@@ -266,6 +272,8 @@ async function quoteOpen({ coreId, body, now }) {
     ltv_current_bps: ltv,
     hf_scaled: hf,
     initial_ltv_bps: risk.initialLtvBps,
+    min_initial_ltv_bps: risk.minInitialLtvBps ?? null,
+    min_ltv_enabled: policy.rules.MIN_INITIAL_LTV_ENABLED !== false,
     margin_call_bps: risk.marginCallBps,
     liquidation_threshold_bps: risk.liquidationBps,
     emergency_threshold_bps: risk.emergencyBps,
@@ -380,6 +388,42 @@ async function openPosition({ coreId, body, now, isTest = false }) {
           details: { max_gross_by_ltv_idr: cap.ltvCap.toFixed(0) },
         });
       }
+      // Temporary minimum initial-LTV floor (origination only). Initial LTV
+      // = gross / (qty x validated price). Checked inside the txn, before
+      // collateral lock / position creation.
+      const collValue = calc.collateralValue(input.qty, price.priceIdr);
+      const ltvBps = calc.ltvBps(gross, collValue);
+      if (
+        policy.rules.MIN_INITIAL_LTV_ENABLED !== false &&
+        risk.minInitialLtvBps != null &&
+        ltvBps != null &&
+        ltvBps < risk.minInitialLtvBps
+      ) {
+        throw new LoanError(
+          `Initial LTV ${(ltvBps / 100).toFixed(2)}% below minimum ${(risk.minInitialLtvBps / 100).toFixed(2)}% for ${input.asset}`,
+          {
+            status: 409,
+            code: "PAWN_INITIAL_LTV_BELOW_MIN",
+            details: {
+              ltv_bps: ltvBps,
+              min_initial_ltv_bps: risk.minInitialLtvBps,
+            },
+          },
+        );
+      }
+      if (ltvBps != null && ltvBps > risk.initialLtvBps) {
+        throw new LoanError(
+          `Initial LTV ${(ltvBps / 100).toFixed(2)}% above maximum ${(risk.initialLtvBps / 100).toFixed(2)}% for ${input.asset}`,
+          {
+            status: 409,
+            code: "PAWN_INITIAL_LTV_ABOVE_MAX",
+            details: {
+              ltv_bps: ltvBps,
+              max_initial_ltv_bps: risk.initialLtvBps,
+            },
+          },
+        );
+      }
       if (gross.gt(cap.customerCap)) {
         throw new LoanError(
           "Gross loan exceeds your borrower cap (5% of pool snapshot)",
@@ -425,6 +469,8 @@ async function openPosition({ coreId, body, now, isTest = false }) {
               gross,
               calc.collateralValue(input.qty, price.priceIdr),
             ),
+            min_initial_ltv_bps: risk.minInitialLtvBps ?? null,
+            max_initial_ltv_bps: risk.initialLtvBps,
             capacity: cap,
             policy_version: policy.version,
             effective_at: now,
@@ -1441,6 +1487,7 @@ async function serializePosition(p, { now, policy, price } = {}) {
     },
     risk: {
       initial_ltv_bps: p.initialLtvBps,
+      min_initial_ltv_bps: risk.minInitialLtvBps ?? null,
       current_ltv_bps: ltv,
       health_factor: hf,
       hf_initial: hfB.initial,

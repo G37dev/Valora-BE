@@ -38,6 +38,9 @@ const APR_BPS = Object.freeze({
 const RISK = Object.freeze({
   [ASSET.XAUT]: Object.freeze({
     initialLtvBps: 6500,
+    // Temporary origination floor (developer brief 14 Nov 2026):
+    // new positions must open at >= 50% initial LTV.
+    minInitialLtvBps: 5000,
     marginCallBps: 7200,
     liquidationBps: 7500,
     emergencyBps: 7800, // once-per-position 4h observation; emergency cut
@@ -49,6 +52,8 @@ const RISK = Object.freeze({
   }),
   [ASSET.GOLD]: Object.freeze({
     initialLtvBps: 6000,
+    // Temporary origination floor: >= 45% initial LTV for new VVLR pawns.
+    minInitialLtvBps: 4500,
     marginCallBps: 6900,
     liquidationBps: 7200,
     emergencyBps: null, // tidak ada emergency / observation untuk VVLR
@@ -78,6 +83,9 @@ const RULES = Object.freeze({
   TWAP_WINDOW_MINUTES: 15,
   QUOTE_TTL_SECONDS: 120,
   TOKEN_DECIMALS: 6,
+  // Temporary minimum initial-LTV floor (loan.origination.min_initial_ltv_enabled).
+  // Applies ONLY to new origination; existing positions/top-up/release unaffected.
+  MIN_INITIAL_LTV_ENABLED: true,
 });
 
 // 18 Position Status (Loan) — borrower state machine
