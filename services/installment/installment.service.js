@@ -544,7 +544,10 @@ async function cancel({ coreId, planId, now = new Date(), transaction }) {
 
     return { plan, result };
   });
-  if (!transaction) await dispatchChainOps(out.plan, sRef);
+  if (!transaction) {
+    await dispatchPushes(out.plan, sRef);
+    await dispatchChainOps(out.plan, sRef);
+  }
   return out;
 }
 

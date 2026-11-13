@@ -1039,6 +1039,19 @@ async function cancel(plan, s, effectiveAt, transaction) {
   });
   plan.set({ calculationSnapshot: toJsonSafe(snapshot) });
 
+  queuePush(s, {
+    title: "Installment Cancelled",
+    body: `Your plan was cancelled. Refund ${fmtIdr(finalRefund)} credited to your internal wallet (compensation ${fmtIdr(compensation)}).`,
+    data: {
+      type: "installment",
+      event: "cancelled",
+      plan_id: String(plan.id),
+      rate_bps: String(rateBps),
+      compensation_idr: compensation.toString(),
+      final_refund_idr: finalRefund.toString(),
+    },
+  });
+
   await ledger.recordEvent(
     plan,
     { eventType: EVENT.CANCELLED, effectiveAt, metadata: snapshot },
