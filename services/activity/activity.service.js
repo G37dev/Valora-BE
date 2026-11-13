@@ -141,8 +141,8 @@ async function buildCryptoDetail(tx, currentBlock) {
         ? `Your ${title.toLowerCase()} completed`
         : `Your ${title.toLowerCase()} is in progress`
       : status === "COMPLETED"
-        ? "Your withdrawal completed"
-        : "Your withdrawal is in progress",
+        ? "Your withdraw completed"
+        : "Your withdraw is in progress",
     asset: tx.asset,
     assetName: ASSET_NAMES[upper(tx.asset)] || tx.asset,
     network: NETWORK_NAME,
