@@ -4,6 +4,7 @@ const authController = require("../controllers/authController");
 const passkeyController = require("../controllers/passkeyController");
 const otpController = require("../controllers/otpController");
 const rateLimit = require("../middleware/rateLimit");
+const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 
 // ==========================================
 // RATE LIMITS — proteksi brute-force
@@ -20,6 +21,18 @@ const setupLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });
 router.post("/register", registerLimiter, authController.register);
 router.post("/login/password", loginLimiter, authController.loginWithPassword);
 router.post("/login/google", googleLimiter, authController.loginWithGoogle);
+/*
+ * Ganti password — butuh JWT penuh. User dengan 2FA aktif wajib
+ * txTicket (TOTP/passkey via x-tx-auth); tanpa 2FA cukup old
+ * password, atau old password + otpTicket WA untuk verifikasi ekstra.
+ */
+router.post(
+  "/change-password",
+  otpLimiter,
+  verifyToken,
+  requireTxAuth,
+  authController.changePassword,
+);
 
 // ==========================================
 // 2. ROUTE 2FA - AUTHENTICATOR (TOTP)

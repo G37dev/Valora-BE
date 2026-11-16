@@ -373,6 +373,84 @@ exports.loginWithPassword = async (req, res) => {
 };
 
 // ============================================================================
+// CHANGE PASSWORD — verifyToken + requireTxAuth di route.
+// - User dgn 2FA aktif : requireTxAuth sudah mewajibkan x-tx-auth (txTicket).
+// - User tanpa 2FA     : cukup oldPassword; otpTicket (WA OTP purpose
+//   "change-password") boleh dikirim sebagai verifikasi tambahan.
+// ============================================================================
+exports.changePassword = async (req, res) => {
+  try {
+    const coreId = req.user?.coreId;
+    if (!coreId) return res.status(401).json({ error: "Token tidak valid." });
+
+    const { oldPassword, newPassword, otpTicket } = req.body;
+    if (!oldPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Password lama dan baru wajib diisi." });
+    }
+
+    const authRecord = await AuthIdentity.findOne({
+      where: { coreId, provider: "LOCAL", type: "CREDENTIAL" },
+    });
+    if (!authRecord || !authRecord.passwordHash) {
+      return res.status(400).json({
+        error: "Akun ini tidak memiliki password (login via Google).",
+      });
+    }
+
+    // Old password salah → error generic-ish tapi tetap jelas untuk user.
+    const isValid = await bcrypt.compare(String(oldPassword), authRecord.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: "Password lama salah." });
+    }
+
+    if (!PASSWORD_REGEX.test(String(newPassword))) {
+      return res.status(400).json({
+        error:
+          "Password minimal 12 karakter dengan huruf besar, huruf kecil, angka, dan simbol.",
+      });
+    }
+
+    if (String(newPassword) === String(oldPassword)) {
+      return res
+        .status(400)
+        .json({ error: "Password baru harus berbeda dari password lama." });
+    }
+
+    /*
+     * Verifikasi 2FA user TOTP/passkey sudah dilakukan middleware
+     * requireTxAuth (header x-tx-auth). Di sini hanya jalur WA OTP
+     * yang perlu divalidasi — opsional untuk user tanpa 2FA.
+     */
+    if (otpTicket) {
+      try {
+        const ticket = jwt.verify(String(otpTicket), JWT_SECRET);
+        if (
+          ticket.scope !== "wa_otp" ||
+          ticket.purpose !== "change-password" ||
+          ticket.coreId !== coreId
+        ) {
+          throw new Error("invalid ticket");
+        }
+      } catch {
+        return res.status(400).json({
+          error: "Bukti verifikasi WhatsApp tidak valid atau kadaluarsa.",
+        });
+      }
+    }
+
+    authRecord.passwordHash = await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS);
+    await authRecord.save();
+
+    res.json({ success: true, message: "Password berhasil diubah." });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ error: "Gagal mengubah password." });
+  }
+};
+
+// ============================================================================
 // METODE 2: GOOGLE OAUTH LOGIN
 // ============================================================================
 exports.loginWithGoogle = async (req, res) => {

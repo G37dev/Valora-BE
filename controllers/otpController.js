@@ -19,12 +19,14 @@ const PURPOSES = new Set([
   "transaction",
   "verify-phone",
   "change-phone",
+  "change-password",
 ]);
 const PURPOSES_WITH_AUTH = new Set([
   "login",
   "transaction",
   "verify-phone",
   "change-phone",
+  "change-password",
 ]);
 
 function decodeAuthToken(req) {
