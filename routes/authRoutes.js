@@ -3,6 +3,7 @@ const router = express.Router();
 const authController = require("../controllers/authController");
 const passkeyController = require("../controllers/passkeyController");
 const otpController = require("../controllers/otpController");
+const passwordResetController = require("../controllers/passwordResetController");
 const rateLimit = require("../middleware/rateLimit");
 const { verifyToken, requireTxAuth } = require("../middlewares/auth");
 
@@ -33,6 +34,16 @@ router.post(
   requireTxAuth,
   authController.changePassword,
 );
+
+/*
+ * Forgot password — public (tanpa JWT). Flow:
+ *  1. /forgot-password/send   → kirim OTP via WA atau email
+ *  2. /forgot-password/verify → verifikasi kode → resetTicket
+ *  3. /reset-password         → resetTicket + password baru (single-use)
+ */
+router.post("/forgot-password/send", otpLimiter, passwordResetController.sendResetOtp);
+router.post("/forgot-password/verify", otpLimiter, passwordResetController.verifyResetOtp);
+router.post("/reset-password", otpLimiter, passwordResetController.resetPassword);
 
 // ==========================================
 // 2. ROUTE 2FA - AUTHENTICATOR (TOTP)

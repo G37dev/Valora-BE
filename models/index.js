@@ -36,6 +36,9 @@ const CronCheckpoint = require("./CronCheckpoint");
 // WhatsApp OTP
 const WaOtpToken = require("./WaOtpToken");
 
+// Password Reset (forgot-password, multi-channel OTP)
+const PasswordResetToken = require("./PasswordResetToken");
+
 // Loan V1
 const LoanPosition = require("./LoanPosition");
 const LoanDrawdown = require("./LoanDrawdown");
@@ -451,6 +454,9 @@ module.exports = {
 
   // WhatsApp OTP
   WaOtpToken,
+
+  // Password Reset
+  PasswordResetToken,
 
   // Loan V1
   LoanPosition,

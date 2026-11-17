@@ -22,6 +22,7 @@ const {
   LoanPgAllocation,
   LoanEvent,
   LoanPriceTick,
+  PasswordResetToken,
   LOYALTY_MODELS,
 } = require("./models");
 
@@ -68,6 +69,7 @@ async function connectDatabase() {
       // karena app.listen hanya dieksekusi saat require.main === module.
       await UserPushToken.sync();
       await BusinessClock.sync();
+      await PasswordResetToken.sync();
       // Kolom idempotency untuk dedup request withdraw (aman re-run).
       await sequelize.query(`
         ALTER TABLE "Transactions"
