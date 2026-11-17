@@ -218,7 +218,7 @@ exports.verifyResetOtp = async (req, res) => {
     if (record.codeHash !== hashCode(code)) {
       await record.increment("attempts");
       const left = MAX_ATTEMPTS - record.attempts;
-      return res.status(401).json({
+      return res.status(400).json({
         error: `Incorrect code.${left > 0 ? ` ${left} attempt(s) left.` : ""}`,
       });
     }
@@ -253,12 +253,12 @@ exports.resetPassword = async (req, res) => {
     try {
       decoded = jwt.verify(String(resetTicket), JWT_SECRET);
     } catch {
-      return res.status(401).json({
+      return res.status(400).json({
         error: "Reset session expired. Please request a new code.",
       });
     }
     if (decoded?.scope !== "pwd_reset" || !decoded.coreId || !decoded.rid) {
-      return res.status(401).json({ error: "Invalid reset session." });
+      return res.status(400).json({ error: "Invalid reset session." });
     }
     if (!PASSWORD_REGEX.test(String(newPassword))) {
       return res.status(400).json({
@@ -274,7 +274,7 @@ exports.resetPassword = async (req, res) => {
       !record.consumedAt ||
       record.resetUsedAt
     ) {
-      return res.status(401).json({
+      return res.status(400).json({
         error: "Reset session already used or invalid.",
       });
     }
