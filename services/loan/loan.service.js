@@ -213,6 +213,7 @@ async function quoteOpen({ coreId, body, now }) {
     : calc.borrowerCap(
         pm.eligible_lending_capital_idr,
         policy.rules.BORROWER_CAP_BPS,
+        policy.rules.BORROWER_CAP_MAX_IDR,
       );
   const aggregatePo = coreId ? await pool.aggregatePrincipal(coreId) : ZERO;
 

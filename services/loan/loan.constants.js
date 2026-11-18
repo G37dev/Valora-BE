@@ -73,6 +73,7 @@ const RULES = Object.freeze({
   PROTOCOL_FEE_BPS: 50, // 0.5% setiap gross disbursement
   MAX_ACTIVE_POSITIONS: 2,
   BORROWER_CAP_BPS: 500, // 5% x eligible lending capital snapshot
+  BORROWER_CAP_MAX_IDR: "5000000", // cap absolut per borrower: Rp5jt
   MAX_POOL_UTILIZATION_BPS: 8500, // 85% x eligible lending capital
   PDP_DAILY_BPS: 5, // 0.05% / hari
   PDP_CAP_BPS: 15, // 0.15% x PO saat maturity

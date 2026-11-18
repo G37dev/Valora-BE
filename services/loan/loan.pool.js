@@ -150,7 +150,11 @@ async function getOrOpenCycle(coreId, pool, policy, { now, transaction }) {
       poolSnapshotId: snap.id,
       eligibleCapitalAtFirstLoanIdr: capital.toFixed(18),
       borrowerCapIdr: calc
-        .borrowerCap(capital, policy.rules.BORROWER_CAP_BPS)
+        .borrowerCap(
+          capital,
+          policy.rules.BORROWER_CAP_BPS,
+          policy.rules.BORROWER_CAP_MAX_IDR,
+        )
         .toFixed(18),
       cycleStartedAt: now,
       status: "OPEN",

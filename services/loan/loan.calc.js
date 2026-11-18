@@ -266,8 +266,14 @@ function liquidationSplit({
 // 04 / 09 Caps & capacity
 // ============================================================
 
-const borrowerCap = (snapshotCapital, bps = RULES.BORROWER_CAP_BPS) =>
-  bpsOf(snapshotCapital, bps);
+const borrowerCap = (
+  snapshotCapital,
+  bps = RULES.BORROWER_CAP_BPS,
+  maxIdr = RULES.BORROWER_CAP_MAX_IDR,
+) => {
+  const cap = bpsOf(snapshotCapital, bps);
+  return maxIdr ? minDec(cap, dec(maxIdr)) : cap;
+};
 const utilizationCap = (eligibleCapital, bps = RULES.MAX_POOL_UTILIZATION_BPS) =>
   bpsOf(eligibleCapital, bps);
 
