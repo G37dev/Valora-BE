@@ -426,8 +426,7 @@ async function openPosition({ coreId, body, now, isTest = false }) {
         );
       }
       if (gross.gt(cap.customerCap)) {
-        throw new LoanError(
-          "Gross loan exceeds your borrower cap (5% of pool snapshot)",
+        throw new LoanError("Loan amount exceeds your borrower cap.",
           {
             status: 409,
             code: "EXCEEDS_BORROWER_CAP",
