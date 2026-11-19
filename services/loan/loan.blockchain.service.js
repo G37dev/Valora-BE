@@ -174,6 +174,44 @@ function viemClients() {
  */
 const ESCROW_OPS_ADVISORY_KEY = 86753091; // konstanta bebas — satu operator EOA
 
+/*
+ * Kirim tx EOA di dalam advisory lock (nonce serialize) dengan retry
+ * terbatas buat transient revert — kasus umum: approve baru landing,
+ * node yang dipakai estimateGas belum ke-sync -> ERC20 revert sesaat.
+ * Estimasi ulang ~8 dtk kemudian biasanya sudah lolos. Retry ini BUKAN
+ * buat revert definitif (qty salah, owner beda) — itu tetap gagal
+ * setelah percobaan habis.
+ */
+async function broadcastEscrowTx(asset, data, label) {
+  const v = viemClients();
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const t = await sequelize.transaction();
+    try {
+      await sequelize.query("SELECT pg_advisory_xact_lock(:key)", {
+        replacements: { key: ESCROW_OPS_ADVISORY_KEY },
+        transaction: t,
+      });
+      const txHash = await v.walletClient.sendTransaction({
+        to: ESCROW_ADDRESS[asset],
+        data,
+      });
+      await t.commit();
+      return txHash;
+    } catch (error) {
+      await t.rollback().catch(() => {});
+      lastErr = error;
+      if (attempt < 3) {
+        console.warn(
+          `[LOAN] ${label} broadcast attempt ${attempt} gagal, retry: ${error.shortMessage || error.message}`,
+        );
+        await new Promise((r) => setTimeout(r, 8000));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function sendEscrowTx(asset, method, params, label) {
   const v = viemClients();
   const functionName = method.match(/function\s+(\w+)/)[1];
@@ -183,22 +221,7 @@ async function sendEscrowTx(asset, method, params, label) {
     args: params,
   });
 
-  const t = await sequelize.transaction();
-  let txHash;
-  try {
-    await sequelize.query("SELECT pg_advisory_xact_lock(:key)", {
-      replacements: { key: ESCROW_OPS_ADVISORY_KEY },
-      transaction: t,
-    });
-    txHash = await v.walletClient.sendTransaction({
-      to: ESCROW_ADDRESS[asset],
-      data,
-    });
-    await t.commit();
-  } catch (error) {
-    await t.rollback().catch(() => {});
-    throw error;
-  }
+  const txHash = await broadcastEscrowTx(asset, data, label);
   if (!txHash) throw new Error(`${label}: transaction hash missing`);
   const receipt = await v.publicClient.waitForTransactionReceipt({
     hash: txHash,
