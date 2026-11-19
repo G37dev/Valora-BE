@@ -23,7 +23,12 @@ async function cachedBlockNumber(rpcRequest, ttlMs = BLOCK_TTL_MS) {
     label: "eth_blockNumber",
   })
     .then((n) => {
-      blockCache.value = Number(n);
+      /*
+       * Max-wins: block number monoton naik, jadi kalau provider
+       * stale balas head lama kita keep nilai terbesar yang pernah
+       * terlihat — conf tidak pernah mundur.
+       */
+      blockCache.value = Math.max(blockCache.value, Number(n));
       blockCache.expiresAt = Date.now() + ttlMs;
       return blockCache.value;
     })

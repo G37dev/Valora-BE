@@ -135,6 +135,15 @@ async function drainAllQueues(timeoutMs = 40_000) {
 
 const BLOCK_CHUNK = 5_000n;
 const CONFIRMATIONS = 12n;
+/*
+ * Token-transfer scan pakai lag lebih kecil (2 blok) supaya deposit
+ * terdeteksi saat confirmations masih <12 — kalau nunggu 12, row
+ * baru dibuat sudah langsung flip SUCCESS di list dan pending
+ * window/banner tidak pernah terlihat. Dedupe by tx_hash menjaga
+ * idempotency; 2 blok cukup aman dari reorg di Sepolia.
+ * Earn events tetap 12 — lebih sensitif ke phantom event reorg.
+ */
+const TOKEN_CONFIRMATIONS = 2n;
 const BOOTSTRAP_LOOKBACK = 8_000n;
 const MAX_CHUNKS_PER_CONTRACT = 10;
 
@@ -162,6 +171,12 @@ async function readCheckpoint(key, fallback) {
 }
 
 async function writeCheckpoint(key, value) {
+  /*
+   * Guard rewind: kalau RPC stale kasih safeHead di bawah cursor
+   * tersimpan, jangan tulis mundur — cursor cuma boleh naik.
+   */
+  const existing = await readCheckpoint(key, 0n);
+  if (value <= existing) return;
   await CronCheckpoint.upsert({ key, value: value.toString() });
 }
 
@@ -189,7 +204,12 @@ async function tickChainEvents() {
   const rpc = getRpcClient({ client: bl.client, chain: bl.customSepolia });
   const latest = BigInt(await cachedBlockNumber(rpc));
   const safeHead = latest - CONFIRMATIONS;
-  const out = { latest_block: Number(latest), safe_head: Number(safeHead) };
+  const tokenSafeHead = latest - TOKEN_CONFIRMATIONS;
+  const out = {
+    latest_block: Number(latest),
+    safe_head: Number(safeHead),
+    token_safe_head: Number(tokenSafeHead),
+  };
 
   const fetchEvents = (contract, from, to, events) =>
     // useIndexer:false — Insight tidak support Sepolia; tanpa ini tiap
@@ -222,7 +242,7 @@ async function tickChainEvents() {
               await pollRange({
                 contract,
                 key: `chain_evt:token:${token.address.toLowerCase()}`,
-                safeHead,
+                safeHead: tokenSafeHead,
                 fetchEvents: (c, f, t) => fetchEvents(c, f, t, [transferEvent]),
                 handle: (event) => bl.handleTransferEvent({ event, token }),
               }),

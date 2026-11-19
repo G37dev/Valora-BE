@@ -22,13 +22,17 @@ const { defineChain } = require("thirdweb/chains");
 
 const THIRDWEB_GW = "https://11155111.rpc.thirdweb.com";
 const PUBLICNODE = "https://ethereum-sepolia-rpc.publicnode.com";
-const XRPC = "https://0xrpc.io/sep";
 
 /*
- * thirdweb cuma ~10 RPS di plan saat ini — 2 fallback menanggung
- * 2/3 beban; retry withRpcRetry otomatis mendarat di provider lain.
+ * 0xrpc.io/sep dibuang dari pool (2026-11): node-nya stale ribuan
+ * blok di belakang head asli + getLogs pruned — ~1/3 read kena data
+ * basi (conf undercount, event scan gagal). Alternatif lain juga
+ * bermasalah: butuh key, getLogs limit 50 blok, atau mati.
+ *
+ * thirdweb cuma ~10 RPS di plan saat ini — publicnode menanggung
+ * sisanya; retry withRpcRetry otomatis mendarat di provider lain.
  */
-const rpcPool = [THIRDWEB_GW, PUBLICNODE, XRPC];
+const rpcPool = [THIRDWEB_GW, PUBLICNODE];
 
 let rpcIdx = 0;
 const nextRpc = () => rpcPool[rpcIdx++ % rpcPool.length];
