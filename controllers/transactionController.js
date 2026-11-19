@@ -8,6 +8,7 @@ const {
   InstallmentPayment,
   InstallmentPlan,
   LoanRepayment,
+  LoanDrawdown,
   LoanPosition,
   EarnPosition,
 } = require("../models");
@@ -233,6 +234,9 @@ exports.getUserTransactions = async (req, res) => {
       if (ref.includes("INSTALLMENT") || desc.includes("INSTALLMENT"))
         return "INSTALLMENT";
       if (ref.includes("REFUND") || desc.includes("REFUND")) return "REFUND";
+      if (ref.startsWith("LOAN-REPAY")) return "PAWN_REPAYMENT";
+      if (ref.startsWith("LOAN-DISB")) return "PAWN_DISBURSEMENT";
+      if (ref.startsWith("LOAN-GAS")) return "PAWN_FEE";
       if (ref.includes("LOAN") || desc.includes("LOAN")) return "PAWN";
       return "TRANSFER";
     };
@@ -271,9 +275,32 @@ exports.getUserTransactions = async (req, res) => {
     const loanRepayByKey = new Map(
       loanRepayments.map((r) => [`${r.positionId}:${r.idempotencyKey}`, r]),
     );
-    const loanPositions = loanRepayments.length
+    const loanDisbIds = internalTxs
+      .map((t) =>
+        String(t.reference || "").match(/^LOAN-DISB-([0-9a-fA-F-]{36})$/),
+      )
+      .filter(Boolean)
+      .map((m) => m[1]);
+    const loanDrawdowns = loanDisbIds.length
+      ? await LoanDrawdown.findAll({ where: { id: loanDisbIds } })
+      : [];
+    const disbById = new Map(loanDrawdowns.map((d) => [String(d.id), d]));
+
+    // Position lookup gabungan: repayment + disbursement + gas fee.
+    const gasPosIds = internalTxs
+      .filter((t) => String(t.reference || "").startsWith("LOAN-GAS-"))
+      .map((t) => t.metadata?.position_id)
+      .filter(Boolean);
+    const loanPosIds = [
+      ...new Set([
+        ...loanRepayments.map((r) => r.positionId),
+        ...loanDrawdowns.map((d) => d.positionId),
+        ...gasPosIds,
+      ]),
+    ];
+    const loanPositions = loanPosIds.length
       ? await LoanPosition.findAll({
-          where: { id: loanRepayments.map((r) => r.positionId) },
+          where: { id: loanPosIds },
         })
       : [];
     const loanPosById = new Map(loanPositions.map((p) => [String(p.id), p]));
@@ -285,7 +312,16 @@ exports.getUserTransactions = async (req, res) => {
       const repay = loanM
         ? loanRepayByKey.get(`${loanM[1]}:${loanM[2]}`)
         : null;
-      const pos = repay ? loanPosById.get(String(repay.positionId)) : null;
+      const disbM = ref.match(/^LOAN-DISB-([0-9a-fA-F-]{36})$/);
+      const disbPos = disbM
+        ? loanPosById.get(String(disbById.get(disbM[1])?.positionId))
+        : null;
+      const pos =
+        (repay ? loanPosById.get(String(repay.positionId)) : null) ||
+        disbPos ||
+        (String(t.reference || "").startsWith("LOAN-GAS-")
+          ? loanPosById.get(String(t.metadata?.position_id))
+          : null);
       const topup = t.topUpId ? topupById.get(String(t.topUpId)) : null;
 
       let subtitle = null;
@@ -303,7 +339,9 @@ exports.getUserTransactions = async (req, res) => {
           ? `From ${String(va.bank).toUpperCase()} • VA`
           : "IDR Top Up";
       } else if (ref.startsWith("LOAN-DISB")) {
-        subtitle = "Loan Disbursement";
+        subtitle = "Pawn Disbursement";
+      } else if (ref.startsWith("LOAN-GAS")) {
+        subtitle = "Release network fee";
       }
 
       return {

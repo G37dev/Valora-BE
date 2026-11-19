@@ -18,6 +18,7 @@ const {
   InstallmentPayment,
   InstallmentPlan,
   LoanRepayment,
+  LoanDrawdown,
   LoanCollateralRelease,
   LoanPosition,
   EarnPosition,
@@ -347,18 +348,93 @@ async function buildLoanRepayDetail(itx, repayment) {
   return base(itx, {
     kind: "PAWN_REPAYMENT",
     title: "Pawn",
+    sectionTitle: "Pawn Repayment Details",
     statusText:
       normStatus(itx.status) === "COMPLETED"
         ? "Your pawn repayment completed"
         : "Your pawn repayment is in progress",
     asset: "IDR",
     assetName: "IDR",
+    refNumber: null,
+    txHash: collateral?.txHash || null,
     previousDebt: prevDebt.toFixed(0),
     amount: dec(repayment.debited_idr ?? itx.amount).toFixed(0),
     priorityApplied: priorityApplied.toFixed(0),
     principalApplied: principalApplied.toFixed(0),
     newDebt: newDebt.toFixed(0),
     collateral,
+    status: normStatus(itx.status),
+  });
+}
+
+// LOAN-DISB-<drawdownId> — kredit IDR hasil pencairan pawn (initial /
+// additional drawdown). Struktur kartu mirror desain repayment: kartu IDR
+// (gross, fee, net) + kartu collateral yang ke-lock.
+async function buildLoanDisbDetail(itx) {
+  const m = String(itx.reference || "").match(
+    /^LOAN-DISB-([0-9a-fA-F-]{36})$/,
+  );
+  const dd = m ? await LoanDrawdown.findByPk(m[1]) : null;
+  if (!dd) return buildGenericDetail(itx, "Pawn Disbursement");
+
+  const pos = dd.positionId
+    ? await LoanPosition.findByPk(dd.positionId)
+    : null;
+  const snap = pos?.openingSnapshot || {};
+  const gross = dec(dd.grossIdr);
+  const fee = dec(dd.protocolFeeIdr);
+  const credited = dec(itx.amount);
+  const net = credited.gt(0) ? credited : gross.minus(fee);
+  const isAdditional = upper(dd.kind) === "ADDITIONAL";
+
+  return base(itx, {
+    kind: "PAWN_DISBURSEMENT",
+    title: "Pawn",
+    sectionTitle: isAdditional
+      ? "Additional Drawdown Details"
+      : "Pawn Disbursement Details",
+    statusText:
+      normStatus(itx.status) === "COMPLETED"
+        ? "Your pawn disbursement completed"
+        : "Your pawn disbursement is in progress",
+    asset: "IDR",
+    assetName: "IDR",
+    amount: net.toFixed(0),
+    gross: gross.toFixed(0),
+    fee: fee.toFixed(0),
+    net: net.toFixed(0),
+    collateral: pos
+      ? {
+          asset: pos.collateralAsset,
+          lockedQty: dec(
+            upper(dd.kind) === "INITIAL" ? pos.originalQty : pos.lockedQty,
+          ).toFixed(),
+          ltvBps: snap.ltv_current_bps ?? null,
+          tenorDays: pos.tenorDays || snap.tenor_days || null,
+          txHash: pos.lockTxHash || null,
+        }
+      : null,
+    refNumber: null,
+    txHash: pos?.lockTxHash || null,
+    status: normStatus(itx.status),
+  });
+}
+
+// LOAN-GAS-<repaymentId> — debit network fee rilis collateral (actual, no
+// markup). Kartu sederhana: nominal fee + asset posisi.
+async function buildLoanFeeDetail(itx) {
+  const posId = itx.metadata?.position_id;
+  const pos = posId ? await LoanPosition.findByPk(posId) : null;
+  return base(itx, {
+    kind: "PAWN_FEE",
+    title: "Pawn",
+    sectionTitle: "Pawn Fee Details",
+    statusText: "Collateral release network fee",
+    asset: "IDR",
+    assetName: "IDR",
+    amount: dec(itx.amount).toFixed(0),
+    collateralAsset: pos?.collateralAsset || null,
+    refNumber: null,
     status: normStatus(itx.status),
   });
 }
@@ -504,6 +580,14 @@ async function resolveActivityDetail({ coreId, refId, currentBlock = 0 }) {
           })
         : null;
       return buildLoanRepayDetail(itx, repayment);
+    }
+
+    if (refUp.startsWith("LOAN-DISB-")) {
+      return buildLoanDisbDetail(itx);
+    }
+
+    if (refUp.startsWith("LOAN-GAS-")) {
+      return buildLoanFeeDetail(itx);
     }
 
     if (refUp.includes("INSTALLMENT")) {
