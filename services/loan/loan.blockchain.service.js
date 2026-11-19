@@ -119,27 +119,66 @@ function escrowContract(asset) {
   });
 }
 
-async function sendEscrowTx(asset, method, params, label) {
+/*
+ * Kirim tx escrow sebagai EOA admin via viem langsung — TIDAK lewat
+ * thirdweb sendTransaction. Alasannya: jalur write thirdweb (gateway
+ * mereka) pernah stall >300 detik sementara read RPC publik tetap sehat,
+ * bikin posisi nyangkut PENDING_COLLATERAL tanpa ada tx yang terkirim.
+ *
+ * Transport fallback menjamin estimateGas/broadcast nyebrang ke provider
+ * lain kalau satu stall. Bounded: receipt wait max 120 detik supaya
+ * serverless function tidak digantung — caller (reconcile) retry di tick
+ * berikutnya; operasi idempotent lewat cek on-chain.
+ */
+let _viem = null;
+function viemClients() {
+  if (_viem) return _viem;
   const {
-    prepareContractCall,
-    sendTransaction,
-    waitForReceipt,
-    adminAccount,
-    client,
-    sepolia,
-  } = thirdweb();
-  const transaction = prepareContractCall({
-    contract: escrowContract(asset),
-    method,
-    params,
+    createWalletClient,
+    createPublicClient,
+    http,
+    fallback,
+    parseAbi,
+    encodeFunctionData,
+  } = require("viem");
+  const { sepolia } = require("viem/chains");
+  const { privateKeyToAccount } = require("viem/accounts");
+  const pk = process.env.VALORA_ADMIN_PRIVATE_KEY;
+  if (!pk) throw new Error("VALORA_ADMIN_PRIVATE_KEY belum dikonfigurasi.");
+  const account = privateKeyToAccount(pk);
+  const transport = fallback(
+    [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://0xrpc.io/sep",
+      "https://11155111.rpc.thirdweb.com",
+    ].map((url) => http(url, { timeout: 20000 })),
+  );
+  _viem = {
+    account,
+    parseAbi,
+    encodeFunctionData,
+    walletClient: createWalletClient({ account, chain: sepolia, transport }),
+    publicClient: createPublicClient({ chain: sepolia, transport }),
+  };
+  return _viem;
+}
+
+async function sendEscrowTx(asset, method, params, label) {
+  const v = viemClients();
+  const functionName = method.match(/function\s+(\w+)/)[1];
+  const data = v.encodeFunctionData({
+    abi: v.parseAbi([method]),
+    functionName,
+    args: params,
   });
-  const result = await sendTransaction({ transaction, account: adminAccount });
-  const txHash = result?.transactionHash;
+  const txHash = await v.walletClient.sendTransaction({
+    to: ESCROW_ADDRESS[asset],
+    data,
+  });
   if (!txHash) throw new Error(`${label}: transaction hash missing`);
-  const receipt = await waitForReceipt({
-    client,
-    chain: sepolia,
-    transactionHash: txHash,
+  const receipt = await v.publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: 120_000,
   });
   if (!receipt || receipt.status !== "success")
     throw new Error(`${label}: tx reverted (${txHash})`);
