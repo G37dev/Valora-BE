@@ -526,21 +526,24 @@ async function openPosition({ coreId, body, now, isTest = false }) {
         qty: input.qty,
         apr,
         policy,
+        cancelOnLockError: false,
       }),
       OPEN_CHAIN_BUDGET_MS,
       "openPosition collateral lock",
     );
   } catch (e) {
-    // Timeout ≠ gagal: chain op jalan terus di background (approve mungkin
-    // sudah on-chain). Posisi tetap PENDING_COLLATERAL — reconcile yang
-    // menyelesaikan; app dapat status pending daripada request mati 300s.
-    if (/timed out after/.test(e.message)) {
-      return {
-        position: await LoanPosition.findByPk(position.id),
-        created: true,
-      };
-    }
-    throw e;
+    // Chain op tidak instant-cancel di request path — revert transient
+    // (mis. RPC node belum sync approve UserOp) sembuh di tick reconcile
+    // berikutnya; failure definitif auto-cancel setelah retry budget.
+    // Posisi tetap PENDING_COLLATERAL; app dapat status pending daripada
+    // posisi langsung CANCELLED karena race sesaat.
+    console.error(
+      `[LOAN] collateral lock pending di request (reconcile mengambil alih): ${e.message}`,
+    );
+    return {
+      position: await LoanPosition.findByPk(position.id),
+      created: true,
+    };
   }
   return { position: activated, created: true };
 }
