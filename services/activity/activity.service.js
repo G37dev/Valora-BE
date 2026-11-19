@@ -341,6 +341,9 @@ async function buildLoanRepayDetail(itx, repayment) {
       const released = dec(rel.tokenQty);
       collateral = {
         asset: position?.collateralAsset || "GOLD",
+        assetName:
+          ASSET_NAMES[upper(position?.collateralAsset)] ||
+          position?.collateralAsset,
         released: released.toFixed(),
         lockedBefore: remaining.plus(released).toFixed(),
         remaining: remaining.toFixed(),
@@ -412,6 +415,8 @@ async function buildLoanDisbDetail(itx) {
     collateral: pos
       ? {
           asset: pos.collateralAsset,
+          assetName:
+            ASSET_NAMES[upper(pos.collateralAsset)] || pos.collateralAsset,
           lockedQty: dec(
             upper(dd.kind) === "INITIAL" ? pos.originalQty : pos.lockedQty,
           ).toFixed(),
