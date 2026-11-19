@@ -185,6 +185,58 @@ async function sendEscrowTx(asset, method, params, label) {
   return txHash;
 }
 
+/*
+ * Read kontrak via viem + transport fallback — JANGAN lewat
+ * thirdweb readContract. Jalur read thirdweb (gateway mereka)
+ * pernah stall permanen saat infra degrade, sementara viem ke
+ * publicnode menjawab <1 detik. Fallback transport pindah provider
+ * otomatis kalau satu stall; http timeout 20s per request.
+ */
+async function viemRead(address, method, params) {
+  const v = viemClients();
+  const functionName = method.match(/function\s+(\w+)/)[1];
+  return v.publicClient.readContract({
+    address,
+    abi: v.parseAbi([method]),
+    functionName,
+    args: params,
+  });
+}
+
+const ALLOWANCE_METHOD =
+  "function allowance(address owner, address spender) view returns (uint256)";
+
+const readTokenAllowance = ({ tokenAddress, owner, spender }) =>
+  viemRead(tokenAddress, ALLOWANCE_METHOD, [owner, spender]);
+
+/*
+ * Read-after-write race: node bisa telat sync 1-2 block setelah
+ * approve landing — poll sampai allowance >= required atau timeout.
+ */
+const waitForAllowance = async ({
+  tokenAddress,
+  owner,
+  spender,
+  required,
+  timeoutMs = 15000,
+  intervalMs = 1500,
+}) => {
+  const deadline = Date.now() + timeoutMs;
+  let last = 0n;
+  for (;;) {
+    try {
+      last = BigInt(
+        await readTokenAllowance({ tokenAddress, owner, spender }),
+      );
+      if (last >= BigInt(required)) return last;
+    } catch {
+      /* read transient — coba lagi di interval berikutnya */
+    }
+    if (Date.now() >= deadline) return last;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+};
+
 /**
  * Pastikan allowance escrow >= amount yang mau di-lock.
  * AA backend-custodial: approve dieksekusi sebagai UserOp dari smart
@@ -209,7 +261,7 @@ async function ensureEscrowAllowance(position, ownerAddress, raw) {
       `token address untuk ${position.collateralAsset} belum di-set`,
     );
 
-  const allowance = await earn.getTokenAllowance({
+  const allowance = await readTokenAllowance({
     tokenAddress,
     owner: ownerAddress,
     spender: escrow,
@@ -241,7 +293,7 @@ async function ensureEscrowAllowance(position, ownerAddress, raw) {
   if (!receipt || receipt.status !== "success")
     throw new Error(`approve: tx reverted (${txHash})`);
 
-  const after = await earn.waitForAllowance({
+  const after = await waitForAllowance({
     tokenAddress,
     owner: ownerAddress,
     spender: escrow,
@@ -421,15 +473,10 @@ async function readOnchainPosition(position) {
       mock: true,
     };
   }
-  const { readContract } = thirdweb();
-  const { withRpcRetry } = require("../../utils/rpcRetry");
-  const [owner, locked, status] = await withRpcRetry(() =>
-    readContract({
-      contract: escrowContract(position.collateralAsset),
-      method:
-        "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
-      params: [positionIdBytes32(position.id)],
-    }),
+  const [owner, locked, status] = await viemRead(
+    ESCROW_ADDRESS[position.collateralAsset],
+    "function getPosition(bytes32 positionId) view returns (address owner, uint256 locked, uint8 status)",
+    [positionIdBytes32(position.id)],
   );
   return { owner, locked, status: Number(status) };
 }
