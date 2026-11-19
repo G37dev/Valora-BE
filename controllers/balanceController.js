@@ -1,4 +1,6 @@
-const { Wallet, InternalWallet } = require("../models");
+const { Wallet, InternalWallet, LoanPosition, LoanDrawdown } =
+  require("../models");
+const { Op } = require("sequelize");
 const { createThirdwebClient, getContract } = require("thirdweb");
 const { sepolia } = require("../utils/chain");
 const { getWalletBalance } = require("thirdweb/wallets");
@@ -159,12 +161,57 @@ exports.getAllBalances = async (req, res) => {
       ]);
 
     // ==========================================
+    // 5b. Collateral ke-lock di escrow tetap milik user + drawdown
+    //     PENDING = incoming. Tampilkan terpisah dari `balance`
+    //     (yang dipakai buat spendable) supaya pas pawn pending
+    //     total aset tidak jatuh ke 0.
+    // ==========================================
+    let lockedXaut = "0";
+    let lockedGold = "0";
+    let pendingIdr = "0";
+    try {
+      const openPositions = await LoanPosition.findAll({
+        where: {
+          core_id: coreId,
+          status: {
+            [Op.notIn]: ["COMPLETED", "CANCELLED", "LIQUIDATED"],
+          },
+        },
+      });
+      let lx = 0;
+      let lg = 0;
+      for (const p of openPositions) {
+        const qty = Number(
+          p.get("locked_qty") || p.get("lockedQty") || 0,
+        );
+        const asset = p.get("collateral_asset") || p.get("collateralAsset");
+        if (asset === "XAUT") lx += qty;
+        else if (asset === "GOLD") lg += qty;
+      }
+      lockedXaut = String(lx);
+      lockedGold = String(lg);
+
+      const pendingDrawdowns = await LoanDrawdown.findAll({
+        where: { coreId, status: "PENDING" },
+      });
+      pendingIdr = String(
+        pendingDrawdowns.reduce(
+          (a, d) => a + Number(d.get("paidIdr") || d.get("paid_idr") || 0),
+          0,
+        ),
+      );
+    } catch (err) {
+      console.warn("Gagal hitung locked collateral/pending:", err.message);
+    }
+
+    // ==========================================
     // 6. Susun response
     // ==========================================
     const assets = {
       internal: {
         idr: {
           balance: idrBalance,
+          pending: pendingIdr,
           idrValue: Number(idrBalance),
         },
       },
@@ -187,11 +234,13 @@ exports.getAllBalances = async (req, res) => {
 
         xaut: {
           balance: xautBalance,
+          locked: lockedXaut,
           symbol: "XAUT",
         },
 
         gold: {
           balance: goldBalance,
+          locked: lockedGold,
           symbol: "GOLD",
         },
       },
