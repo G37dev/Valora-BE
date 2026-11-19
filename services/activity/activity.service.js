@@ -326,8 +326,12 @@ async function buildLoanRepayDetail(itx, repayment) {
   const priorityApplied = dec(wf.pdp).plus(dec(wf.interest));
   const principalApplied = dec(wf.principal || 0);
 
-  const prevDebt = dec(repayment.principal_before_idr);
-  const newDebt = dec(repayment.principal_after_idr);
+  const prevDebt = dec(
+    repayment.principalBeforeIdr ?? repayment.principal_before_idr,
+  );
+  const newDebt = dec(
+    repayment.principalAfterIdr ?? repayment.principal_after_idr,
+  );
 
   let collateral = null;
   if (repayment.releaseId) {
@@ -358,7 +362,9 @@ async function buildLoanRepayDetail(itx, repayment) {
     refNumber: null,
     txHash: collateral?.txHash || null,
     previousDebt: prevDebt.toFixed(0),
-    amount: dec(repayment.debited_idr ?? itx.amount).toFixed(0),
+    amount: dec(
+      repayment.debitedIdr ?? repayment.debited_idr ?? itx.amount,
+    ).toFixed(0),
     priorityApplied: priorityApplied.toFixed(0),
     principalApplied: principalApplied.toFixed(0),
     newDebt: newDebt.toFixed(0),
