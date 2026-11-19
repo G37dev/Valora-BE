@@ -742,16 +742,19 @@ const PENDING_COLLATERAL_MAX_ATTEMPTS = Number(
 );
 
 async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
-  const staleBefore = new Date(now.getTime() - PENDING_COLLATERAL_STALE_MS);
-  const stuck = await LoanPosition.findAll({
-    attributes: ["id", "coreId", "createdAt"],
-    where: {
-      status: STATUS.PENDING_COLLATERAL,
-      createdAt: { [Op.lt]: staleBefore },
-    },
+  const staleBeforeMs = now.getTime() - PENDING_COLLATERAL_STALE_MS;
+  const pending = await LoanPosition.findAll({
+    where: { status: STATUS.PENDING_COLLATERAL },
     order: [["created_at", "ASC"]],
-    limit,
+    limit: 50,
   });
+  const createdAtOf = (p) => p.get("created_at") || p.createdAt;
+  const stuck = pending
+    .filter((p) => {
+      const c = createdAtOf(p);
+      return c && new Date(c).getTime() < staleBeforeMs;
+    })
+    .slice(0, limit);
 
   let resumed = 0;
   let cancelled = 0;
@@ -769,7 +772,7 @@ async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
           eventType: EVENT.DISBURSEMENT_FAILED,
         },
       });
-      const ageMs = now.getTime() - new Date(row.createdAt).getTime();
+      const ageMs = now.getTime() - new Date(createdAtOf(row)).getTime();
       if (attempts + 1 >= PENDING_COLLATERAL_MAX_ATTEMPTS || ageMs > PENDING_COLLATERAL_GIVE_UP_MS) {
         await cancelPendingCollateral(row, {
           now,
@@ -798,6 +801,54 @@ async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
     console.log(`[LOAN RECONCILE] resumed=${resumed} cancelled=${cancelled}`);
   }
   return { resumed, cancelled, found: stuck.length };
+}
+
+/**
+ * Admin/ops repair: posisi sudah ACTIVE/PENDING_DISBURSEMENT tapi lock
+ * on-chain belum benar-benar ada (lock_tx_hash kosong / "0xmock…" dari
+ * reconcile yang jalan di mode mock). Kirim lock tx beneran lalu update
+ * lock_tx_hash. Idempotent: kalau on-chain sudah locked, cuma rekam hash.
+ */
+async function repairCollateralLock(positionId, { now }) {
+  const p0 = await LoanPosition.findByPk(positionId);
+  if (!p0) {
+    throw new LoanError("Loan position not found", {
+      status: 404,
+      code: "POSITION_NOT_FOUND",
+    });
+  }
+  if (p0.status !== STATUS.ACTIVE && p0.status !== STATUS.PENDING_DISBURSEMENT) {
+    throw new LoanError(`Position ${p0.status} does not need lock repair`, {
+      status: 409,
+      code: "NO_REPAIR_NEEDED",
+    });
+  }
+  const qty = dec(p0.lockedQty).gt(0) ? dec(p0.lockedQty) : dec(p0.originalQty);
+  const expectedRaw = qty.mul(10 ** p0.tokenDecimals).toFixed(0);
+  const onchain = await bc.readOnchainPosition(p0);
+  if (
+    onchain?.locked != null &&
+    BigInt(expectedRaw) > 0n &&
+    BigInt(onchain.locked) >= BigInt(expectedRaw)
+  ) {
+    if (p0.lockTxHash && !p0.lockTxHash.startsWith("0xmock")) {
+      return { repaired: false, reason: "already_locked_onchain" };
+    }
+    await p0.update({ lockTxHash: "onchain:confirmed" });
+    return { repaired: true, txHash: "onchain:confirmed" };
+  }
+  const txHash = await bc.lockCollateral(p0, p0.ownerAddress || "0x0", qty);
+  await p0.update({ lockTxHash: txHash });
+  await ledger.recordEvent(
+    p0,
+    {
+      eventType: EVENT.COLLATERAL_LOCKED,
+      effectiveAt: now,
+      amountQty: qty,
+      metadata: { tx_hash: txHash, repair: true },
+    },
+  );
+  return { repaired: true, txHash };
 }
 
 // ============================================================
@@ -1823,4 +1874,5 @@ module.exports = {
   lockPosition,
   reconcilePendingCollateral,
   completePendingCollateral,
+  repairCollateralLock,
 };

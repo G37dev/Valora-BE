@@ -87,6 +87,11 @@ router.post(
   adminAuth,
   c.adminForceLiquidate,
 );
+router.post(
+  "/admin/positions/:position_id/repair-lock",
+  adminAuth,
+  c.adminRepairLock,
+);
 router.post("/admin/tick", adminAuth, c.adminRunTick);
 router.post("/admin/test/price", testAuth, c.testSetPrice);
 router.post("/admin/test/tick", testAuth, c.testRunTick);

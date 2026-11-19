@@ -306,6 +306,17 @@ const adminForceLiquidate = wrap("forcing liquidation", async (req, res) => {
   });
 });
 
+const adminRepairLock = wrap("repairing collateral lock", async (req, res) => {
+  res.json({
+    success: true,
+    data: toJsonSafe(
+      await service.repairCollateralLock(req.params.position_id, {
+        now: await clock.now(req),
+      }),
+    ),
+  });
+});
+
 // ---------------- QA / test controls (gated clock key) ----------------
 
 const testSetPrice = wrap("setting test price", async (req, res) => {
@@ -354,6 +365,7 @@ module.exports = {
   adminCreatePolicy,
   adminSimulatePolicy,
   adminForceLiquidate,
+  adminRepairLock,
   adminRunTick,
   testSetPrice,
   testRunTick,
