@@ -760,7 +760,7 @@ async function completePendingCollateral(
 //  - gagal -> catat attempt; cancel hanya setelah maxAttempts ATAU umur
 //    posisi > giveUpMs (bebasin borrower cap/slot).
 const PENDING_COLLATERAL_STALE_MS = Number(
-  process.env.LOAN_PENDING_COLLATERAL_STALE_MS ?? 5 * 60 * 1000,
+  process.env.LOAN_PENDING_COLLATERAL_STALE_MS ?? 2 * 60 * 1000,
 );
 const PENDING_COLLATERAL_GIVE_UP_MS = Number(
   process.env.LOAN_PENDING_COLLATERAL_GIVE_UP_MS ?? 2 * 60 * 60 * 1000,
