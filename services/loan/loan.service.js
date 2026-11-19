@@ -613,6 +613,13 @@ async function completePendingCollateral(
     try {
       lockTx = await bc.lockCollateral(p0, p0.ownerAddress || "0x0", qty);
     } catch (error) {
+      // On-chain revert/stall adalah operational signal, bukan client
+      // error — log selalu supaya muncul di Vercel (LoanError sendiri
+      // sengaja tidak di-log oleh handleError).
+      console.error(
+        `[LOAN] collateral lock gagal posisi ${positionId}:`,
+        error.message,
+      );
       if (cancelOnLockError) {
         await cancelPendingCollateral(p0, {
           now,
