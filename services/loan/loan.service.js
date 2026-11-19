@@ -37,6 +37,7 @@ const {
   TENOR_DAYS,
   STATUS,
   OPEN_STATUSES,
+  COUNTED_STATUSES,
   TERMINAL_STATUSES,
   EVENT,
   REV_ID,
@@ -1662,11 +1663,17 @@ async function serializePosition(p, { now, policy, price } = {}) {
   const hfB = calc.hfBoundaries(risk);
   price =
     price ||
-    (engine.isOpen(p)
+    (COUNTED_STATUSES.includes(p.status)
       ? await pricing.getValidatedPrice(p.collateralAsset, now, { policy })
       : null);
+  // Selama PENDING_COLLATERAL locked_qty masih 0 — pakai original_qty agar
+  // market value menampilkan collateral yang sedang di-lock, bukan 0.
+  const effQty =
+    p.status === "PENDING_COLLATERAL" && Number(s.lockedQty) === 0
+      ? p.originalQty
+      : s.lockedQty;
   const collValue = price?.priceIdr
-    ? calc.collateralValue(s.lockedQty, price.priceIdr)
+    ? calc.collateralValue(effQty, price.priceIdr)
     : null;
   const ltv = collValue ? calc.ltvBps(d.tdd, collValue) : null;
   const hf = collValue
@@ -1715,6 +1722,16 @@ async function serializePosition(p, { now, policy, price } = {}) {
       total_debt_due_idr: d.tdd,
       first_cycle_interest_free: s.lastAnniv === 0,
     },
+    // Request intent dari opening snapshot — berguna sebelum aktivasi saat
+    // gross/net/fee masih 0.
+    request: p.openingSnapshot
+      ? {
+          gross_idr: p.openingSnapshot.gross_idr ?? null,
+          net_idr: p.openingSnapshot.net_idr ?? null,
+          fee_idr: p.openingSnapshot.fee_idr ?? null,
+          ltv_bps: p.openingSnapshot.ltv_bps ?? null,
+        }
+      : null,
     terms: {
       apr_bps: p.aprBps,
       tenor_days: p.tenorDays,
@@ -1794,7 +1811,7 @@ async function listPositions({ coreId, status, includeTest, now }) {
   const priceCache = {};
   const out = [];
   for (const p of rows) {
-    if (engine.isOpen(p) && !priceCache[p.collateralAsset]) {
+    if (COUNTED_STATUSES.includes(p.status) && !priceCache[p.collateralAsset]) {
       priceCache[p.collateralAsset] = await pricing.getValidatedPrice(
         p.collateralAsset,
         now,
