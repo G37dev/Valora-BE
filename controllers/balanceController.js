@@ -174,7 +174,7 @@ exports.getAllBalances = async (req, res) => {
         where: {
           core_id: coreId,
           status: {
-            [Op.notIn]: ["COMPLETED", "CANCELLED", "LIQUIDATED"],
+            [Op.notIn]: ["COMPLETED", "CANCELLED", "AUTO_LIQUIDATED"],
           },
         },
       });
