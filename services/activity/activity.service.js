@@ -201,24 +201,74 @@ function buildSwapDetail(s) {
 // ---------------------------------------------------------------------
 // InternalTransaction -> topup / installment / loan / generic
 // ---------------------------------------------------------------------
+// payment_type midtrans -> label friendly buat Deposit Method.
+const PAYMENT_METHOD_LABELS = {
+  bank_transfer: "Transfer Bank / VA",
+  echannel: "Mandiri Bill Payment",
+  gopay: "GoPay",
+  qris: "QRIS",
+  shopeepay: "ShopeePay",
+  cstore: "Convenience Store",
+  credit_card: "Credit Card",
+  debit_card: "Debit Card",
+  bca_klikpay: "BCA KlikPay",
+  bca_klikbca: "KlikBCA",
+  bri_epay: "BRImo",
+  cimb_clicks: "OCTO Clicks",
+  danamon_online: "Danamon Online",
+  uob_ezpay: "UOB EZPay",
+  akulaku: "Akulaku",
+  kredivo: "Kredivo",
+  snap: "Snap Payment",
+};
+
+// Label field nomor bayar per tipe (VA / bill key / payment code).
+const PAYMENT_NUMBER_LABELS = {
+  bank_transfer: "Virtual Account Number",
+  echannel: "Bill Key",
+  cstore: "Payment Code",
+};
+
 function topupBankInfo(itx, topup) {
+  // Notification midtrans bisa di 3 tempat: itx.metadata.notification,
+  // rawResponse.notification, atau callbackPayload (body apa adanya).
+  const rawCb = topup?.callbackPayload || topup?.callback_payload || {};
   const rawResp = topup?.rawResponse || topup?.raw_response || {};
-  const notif = itx?.metadata?.notification || rawResp.notification || {};
+  const notif =
+    itx?.metadata?.notification || rawResp.notification || rawCb || {};
+  const pt = String(notif.payment_type || "").toLowerCase();
   const va = Array.isArray(notif.va_numbers) ? notif.va_numbers[0] : null;
-  const bank = (va?.bank || notif.bank || "").toUpperCase() || null;
-  const vaNumber = va?.va_number || notif.va_number || null;
+  const bank =
+    (va?.bank || notif.bank || "").toUpperCase() ||
+    (pt === "echannel" ? "MANDIRI" : null);
+  const vaNumber =
+    va?.va_number ||
+    notif.va_number ||
+    notif.permata_va_number ||
+    notif.bca_va_number ||
+    null;
+  const rawMethod = topup?.paymentMethod || topup?.payment_method || null;
   const method =
-    topup?.paymentMethod ||
-    topup?.payment_method ||
-    (notif.payment_type === "bank_transfer"
-      ? "Virtual Account"
-      : notif.payment_type) ||
-    "Virtual Account";
-  return { bank, vaNumber, method };
+    PAYMENT_METHOD_LABELS[pt] ||
+    PAYMENT_METHOD_LABELS[String(rawMethod || "").toLowerCase()] ||
+    rawMethod ||
+    (pt ? notif.payment_type : null) ||
+    "-";
+  // Nomor bayar tergantung tipe pembayaran.
+  let numberLabel = PAYMENT_NUMBER_LABELS[pt] || null;
+  let number = null;
+  if (pt === "echannel") number = notif.bill_key || null;
+  else if (pt === "cstore") number = notif.payment_code || null;
+  else number = vaNumber;
+  if (number && !numberLabel) numberLabel = "Virtual Account Number";
+  return { bank, vaNumber, method, number, numberLabel };
 }
 
 async function buildTopupDetail(itx, topup) {
-  const { bank, vaNumber, method } = topupBankInfo(itx, topup);
+  const { bank, vaNumber, method, number, numberLabel } = topupBankInfo(
+    itx,
+    topup,
+  );
   const amount = dec(topup?.amountIdr ?? topup?.amount_idr ?? itx.amount);
   const st = normStatus(itx.status);
   const statusText =
@@ -246,6 +296,8 @@ async function buildTopupDetail(itx, topup) {
     bank,
     method,
     vaNumber,
+    number: number || vaNumber,
+    numberLabel: numberLabel || "Virtual Account Number",
     fee: "0",
     totalLabel: "Total Credited",
     total: amount.toFixed(0),
