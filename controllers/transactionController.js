@@ -99,12 +99,43 @@ function validateAmountPrecision(amount, tokenDecimals) {
   return null;
 }
 
+// Throttle scan deposit on-demand per coreId — endpoint ini di-poll
+// tiap ~4 detik oleh app; scan maksimal sekali per 45 detik per user
+// per instance supaya tidak membebani RPC.
+const depositScanLastAt = new Map();
+const DEPOSIT_SCAN_INTERVAL_MS = 45_000;
+
 // @desc    Ambil riwayat transaksi & hitung progress konfirmasi blok
 // @route   GET /api/transactions/:coreId
 exports.getUserTransactions = async (req, res) => {
   try {
     const { coreId } = req.params;
     const REQUIRED_CONFIRMATIONS = 12;
+
+    /*
+     * Opportunistic deposit scan — cron tick (±1 mnt) adalah fallback;
+     * scan di sini bikin deposit terdeteksi dalam sekali poll saat user
+     * aktif membuka aplikasi. Dijalankan sebelum fetch list supaya row
+     * baru langsung ikut response ini.
+     */
+    try {
+      const lastScan = depositScanLastAt.get(coreId) || 0;
+      if (Date.now() - lastScan > DEPOSIT_SCAN_INTERVAL_MS) {
+        depositScanLastAt.set(coreId, Date.now());
+        const userWallet = await Wallet.findOne({
+          where: { core_id: coreId },
+          attributes: ["address"],
+        });
+        if (userWallet?.address) {
+          const {
+            scanWalletRecentTransfers,
+          } = require("../services/blockchainListener");
+          await scanWalletRecentTransfers(userWallet.address);
+        }
+      }
+    } catch (scanErr) {
+      console.error("[DepositScan] skip:", scanErr?.message || scanErr);
+    }
 
     const transactions = await Transaction.findAll({
       where: { core_id: coreId },

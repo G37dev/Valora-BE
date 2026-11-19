@@ -2,9 +2,11 @@ require("dotenv").config();
 const {
   createThirdwebClient,
   getContract,
+  getContractEvents,
   prepareEvent,
   watchContractEvents,
 } = require("thirdweb");
+const { getRpcClient, eth_blockNumber } = require("thirdweb/rpc");
 const { sepolia: customSepolia } = require("../utils/chain");
 const { toTokens } = require("thirdweb/utils");
 const { decimals } = require("thirdweb/extensions/erc20");
@@ -264,9 +266,60 @@ const startBlockchainListener = async () => {
   console.log("Blockchain listener aktif");
   console.log("========================================");
 };
+/*
+ * Scan on-demand transfer masuk ke satu wallet — dipakai path HTTP
+ * (tx list/balances) supaya deposit terdeteksi dalam hitungan detik,
+ * bukan nunggu tick cron ~1 menit. Range sengaja kecil; dedupe di
+ * handleTransferEvent bikin overlap dengan cron aman.
+ */
+const WALLET_SCAN_LOOKBACK = 400n;
+
+const scanWalletRecentTransfers = async (walletAddress) => {
+  const normalizedTo = normalizeAddress(walletAddress);
+  if (!normalizedTo) return { scanned: 0 };
+  const rpc = getRpcClient({ client, chain: customSepolia });
+  const head = BigInt(await eth_blockNumber(rpc));
+  const fromBlock = head > WALLET_SCAN_LOOKBACK ? head - WALLET_SCAN_LOOKBACK : 0n;
+  let scanned = 0;
+  for (const token of getTokensToWatch()) {
+    if (!token.address) continue;
+    try {
+      const contract = getContract({
+        client,
+        chain: customSepolia,
+        address: token.address,
+      });
+      const events = await getContractEvents({
+        contract,
+        fromBlock,
+        toBlock: head,
+        events: [
+          prepareEvent({
+            signature:
+              "event Transfer(address indexed from,address indexed to,uint256 value)",
+          }),
+        ],
+        useIndexer: false,
+      });
+      for (const event of events) {
+        if (normalizeAddress(event.args?.to) !== normalizedTo) continue;
+        scanned += 1;
+        await handleTransferEvent({ event, token });
+      }
+    } catch (error) {
+      console.error(
+        `[DepositScan] ${token.name} gagal:`,
+        error?.message || error,
+      );
+    }
+  }
+  return { scanned };
+};
+
 module.exports = {
   startBlockchainListener,
   handleTransferEvent,
+  scanWalletRecentTransfers,
   getTokensToWatch,
   client,
   customSepolia,
