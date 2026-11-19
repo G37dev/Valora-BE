@@ -518,55 +518,112 @@ async function openPosition({ coreId, body, now, isTest = false }) {
   }
   if (!created) return { position, created: false };
 
-  // On-chain collateral lock (confirmed) sebelum aktivasi
-  let lockTx;
-  try {
-    lockTx = await bc.lockCollateral(
-      position,
-      ownerAddress || "0x0",
-      input.qty,
+  const activated = await completePendingCollateral(position.id, {
+    now,
+    qty: input.qty,
+    apr,
+    policy,
+  });
+  return { position: activated, created: true };
+}
+
+/**
+ * Cleanup posisi yang gagal sebelum aktivasi: CANCELLED + drawdown FAILED +
+ * DISBURSEMENT_FAILED event + tutup cycle bila idle. Dipakai openPosition
+ * dan reconciler.
+ */
+async function cancelPendingCollateral(position, { now, reason }) {
+  await sequelize.transaction(async (t) => {
+    const p = await lockPosition(position.id, position.coreId, t);
+    if (p.status !== STATUS.PENDING_COLLATERAL) return;
+    p.set({ status: STATUS.CANCELLED, closedAt: now });
+    await p.save({ transaction: t });
+    await LoanDrawdown.update(
+      { status: "FAILED" },
+      { where: { positionId: p.id }, transaction: t },
     );
-  } catch (error) {
-    await sequelize.transaction(async (t) => {
-      const p = await lockPosition(position.id, coreId, t);
-      p.set({ status: STATUS.CANCELLED, closedAt: now });
-      await p.save({ transaction: t });
-      await LoanDrawdown.update(
-        { status: "FAILED" },
-        { where: { positionId: p.id }, transaction: t },
-      );
-      await ledger.recordEvent(
-        p,
-        {
-          eventType: EVENT.DISBURSEMENT_FAILED,
-          effectiveAt: now,
-          metadata: { reason: `collateral lock failed: ${error.message}` },
-        },
-        t,
-      );
-      await pool.closeCycleIfIdle(coreId, { now, transaction: t });
-    });
-    throw new LoanError(`Collateral lock failed: ${error.message}`, {
-      status: 502,
-      code: "COLLATERAL_LOCK_FAILED",
-    });
+    await ledger.recordEvent(
+      p,
+      {
+        eventType: EVENT.DISBURSEMENT_FAILED,
+        effectiveAt: now,
+        metadata: { reason },
+      },
+      t,
+    );
+    await pool.closeCycleIfIdle(p.coreId, { now, transaction: t });
+  });
+}
+
+/**
+ * Fase setelah reserve (PENDING_COLLATERAL): lock collateral on-chain
+ * lalu aktivasi + disburse. Dipanggil dua jalan:
+ *  - fast path: openPosition tepat setelah create (fail -> cancel langsung)
+ *  - heal path: scheduler reconcilePendingCollateral (fail -> retry,
+ *    cancel hanya setelah budget habis)
+ * Idempotent: cek on-chain getPosition dulu — kalau lock sudah landing tapi
+ * request mati sebelum simpan lock_tx_hash, lanjut aktivasi tanpa kirim
+ * lock tx kedua. Activation sendiri satu DB transaction (atomic).
+ */
+async function completePendingCollateral(
+  positionId,
+  { now, qty, apr, policy, cancelOnLockError = true },
+) {
+  const p0 = await LoanPosition.findByPk(positionId);
+  if (!p0 || p0.status !== STATUS.PENDING_COLLATERAL) return p0;
+  const coreId = p0.coreId;
+  qty = qty || dec(p0.originalQty);
+  apr = apr ?? p0.aprBps;
+  policy = policy || (await getActivePolicy(now));
+
+  const expectedRaw = qty.mul(10 ** p0.tokenDecimals).toFixed(0);
+  const onchain = await bc.readOnchainPosition(p0).catch(() => null);
+  const alreadyLocked =
+    onchain?.locked != null &&
+    BigInt(expectedRaw) > 0n &&
+    BigInt(onchain.locked) >= BigInt(expectedRaw);
+
+  let lockTx;
+  let onchainConfirmed = false;
+  if (alreadyLocked) {
+    lockTx = p0.lockTxHash || "onchain:confirmed";
+    onchainConfirmed = true;
+  } else {
+    try {
+      lockTx = await bc.lockCollateral(p0, p0.ownerAddress || "0x0", qty);
+    } catch (error) {
+      if (cancelOnLockError) {
+        await cancelPendingCollateral(p0, {
+          now,
+          reason: `collateral lock failed: ${error.message}`,
+        });
+        throw new LoanError(`Collateral lock failed: ${error.message}`, {
+          status: 502,
+          code: "COLLATERAL_LOCK_FAILED",
+        });
+      }
+      throw error;
+    }
   }
 
   const s = { pushes: [], chainOps: [] };
   const activated = await sequelize.transaction(async (t) => {
-    const p = await lockPosition(position.id, coreId, t);
+    const p = await lockPosition(positionId, coreId, t);
     if (p.status !== STATUS.PENDING_COLLATERAL) return p;
     const poolRow = await pool.getPool({ transaction: t, lock: true });
-    const dd = await LoanDrawdown.findByPk(drawdown.id, {
+    const dd = await LoanDrawdown.findOne({
+      where: { positionId: p.id, kind: "INITIAL", status: "PENDING" },
+      order: [["created_at", "ASC"]],
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
+    if (!dd) return p;
     const gross = dec(dd.grossIdr);
     const fee = dec(dd.protocolFeeIdr);
     const net = dec(dd.paidIdr);
 
     p.set({
-      lockedQty: input.qty.toFixed(18),
+      lockedQty: qty.toFixed(18),
       lockTxHash: lockTx,
       status: STATUS.PENDING_DISBURSEMENT,
     });
@@ -575,8 +632,8 @@ async function openPosition({ coreId, body, now, isTest = false }) {
       {
         eventType: EVENT.COLLATERAL_LOCKED,
         effectiveAt: now,
-        amountQty: input.qty,
-        metadata: { tx_hash: lockTx },
+        amountQty: qty,
+        metadata: { tx_hash: lockTx, onchain_confirmed: onchainConfirmed },
       },
       t,
     );
@@ -661,7 +718,86 @@ async function openPosition({ coreId, body, now, isTest = false }) {
     return p;
   });
   await afterCommit(activated, s, now);
-  return { position: activated, created: true };
+  return activated;
+}
+
+// ============================================================
+// 05b Reconcile posisi stuck PENDING_COLLATERAL
+// ============================================================
+//
+// Request bisa mati di tengah chain lock (serverless timeout/kill): posisi
+// tinggal PENDING_COLLATERAL, drawdown PENDING, collateral belum ke-lock.
+// Scheduler memanggil ini tiap tick untuk posisi yang umurnya > staleMs:
+//  - coba completePendingCollateral (idempotent, cek on-chain dulu)
+//  - gagal -> catat attempt; cancel hanya setelah maxAttempts ATAU umur
+//    posisi > giveUpMs (bebasin borrower cap/slot).
+const PENDING_COLLATERAL_STALE_MS = Number(
+  process.env.LOAN_PENDING_COLLATERAL_STALE_MS ?? 5 * 60 * 1000,
+);
+const PENDING_COLLATERAL_GIVE_UP_MS = Number(
+  process.env.LOAN_PENDING_COLLATERAL_GIVE_UP_MS ?? 2 * 60 * 60 * 1000,
+);
+const PENDING_COLLATERAL_MAX_ATTEMPTS = Number(
+  process.env.LOAN_PENDING_COLLATERAL_MAX_ATTEMPTS ?? 5,
+);
+
+async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
+  const staleBefore = new Date(now.getTime() - PENDING_COLLATERAL_STALE_MS);
+  const stuck = await LoanPosition.findAll({
+    attributes: ["id", "coreId", "createdAt"],
+    where: {
+      status: STATUS.PENDING_COLLATERAL,
+      createdAt: { [Op.lt]: staleBefore },
+    },
+    order: [["created_at", "ASC"]],
+    limit,
+  });
+
+  let resumed = 0;
+  let cancelled = 0;
+  for (const row of stuck) {
+    try {
+      const p = await completePendingCollateral(row.id, {
+        now,
+        cancelOnLockError: false,
+      });
+      if (p && p.status === STATUS.ACTIVE) resumed += 1;
+    } catch (error) {
+      const attempts = await LoanEvent.count({
+        where: {
+          positionId: row.id,
+          eventType: EVENT.DISBURSEMENT_FAILED,
+        },
+      });
+      const ageMs = now.getTime() - new Date(row.createdAt).getTime();
+      if (attempts + 1 >= PENDING_COLLATERAL_MAX_ATTEMPTS || ageMs > PENDING_COLLATERAL_GIVE_UP_MS) {
+        await cancelPendingCollateral(row, {
+          now,
+          reason: `collateral lock failed after ${attempts + 1} reconcile attempts: ${error.message}`,
+        }).catch(() => {});
+        cancelled += 1;
+      } else {
+        await LoanEvent.create({
+          positionId: row.id,
+          coreId: row.coreId,
+          eventType: EVENT.DISBURSEMENT_FAILED,
+          effectiveAt: now,
+          metadata: {
+            reason: `reconcile attempt failed: ${error.message}`,
+            reconcile_attempt: true,
+          },
+        }).catch(() => {});
+      }
+      console.error(
+        `[LOAN RECONCILE] posisi ${row.id} gagal (attempt ${attempts + 1}):`,
+        error.message,
+      );
+    }
+  }
+  if (resumed || cancelled) {
+    console.log(`[LOAN RECONCILE] resumed=${resumed} cancelled=${cancelled}`);
+  }
+  return { resumed, cancelled, found: stuck.length };
 }
 
 // ============================================================
@@ -1685,4 +1821,6 @@ module.exports = {
   listPositions,
   getPositionDetail,
   lockPosition,
+  reconcilePendingCollateral,
+  completePendingCollateral,
 };

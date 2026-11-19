@@ -12,7 +12,10 @@
 const cron = require("node-cron");
 const { Op } = require("sequelize");
 const { LoanPosition, LoanLiquidation } = require("../../models");
-const { settlePosition } = require("./loan.service");
+const {
+  settlePosition,
+  reconcilePendingCollateral,
+} = require("./loan.service");
 const liquidation = require("./loan.liquidation");
 const pricing = require("./loan.pricing");
 const { getActivePolicy } = require("./loan.policy");
@@ -30,6 +33,12 @@ async function tick(now) {
   let failed = 0;
   let liquidated = 0;
   try {
+    // Heal posisi yang ketahan pas request mati sebelum collateral lock
+    // (serverless timeout) — idempotent, aman dipanggil tiap tick.
+    await reconcilePendingCollateral(now).catch((error) =>
+      console.error("[LOAN RECONCILE] error:", error.message),
+    );
+
     for (const asset of Object.values(ASSET)) {
       await pricing.recordTickFromPriceTable(asset).catch(() => {});
     }

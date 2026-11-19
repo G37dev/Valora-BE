@@ -9,6 +9,11 @@
             "use": "@vercel/node"
         }
     ],
+    "functions": {
+        "index.js": {
+            "maxDuration": 300
+        }
+    },
     "routes": [
         {
             "src": "/(.*)",
