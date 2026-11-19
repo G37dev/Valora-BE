@@ -740,6 +740,19 @@ const PENDING_COLLATERAL_GIVE_UP_MS = Number(
 const PENDING_COLLATERAL_MAX_ATTEMPTS = Number(
   process.env.LOAN_PENDING_COLLATERAL_MAX_ATTEMPTS ?? 5,
 );
+const RECONCILE_RESUME_TIMEOUT_MS = Number(
+  process.env.LOAN_RECONCILE_RESUME_TIMEOUT_MS ?? 150_000,
+);
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms,
+      ).unref?.(),
+    ),
+  ]);
 
 async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
   const staleBeforeMs = now.getTime() - PENDING_COLLATERAL_STALE_MS;
@@ -760,10 +773,17 @@ async function reconcilePendingCollateral(now, { limit = 5 } = {}) {
   let cancelled = 0;
   for (const row of stuck) {
     try {
-      const p = await completePendingCollateral(row.id, {
-        now,
-        cancelOnLockError: false,
-      });
+      // Bounded: kalau chain op (approve UserOp/lock) stall — mis. bundler
+      // degrade — tick tidak keburn habis; operasi tetap jalan di
+      // background dan tick berikutnya verifikasi via on-chain read.
+      const p = await withTimeout(
+        completePendingCollateral(row.id, {
+          now,
+          cancelOnLockError: false,
+        }),
+        RECONCILE_RESUME_TIMEOUT_MS,
+        `reconcile resume ${row.id}`,
+      );
       if (p && p.status === STATUS.ACTIVE) resumed += 1;
     } catch (error) {
       const attempts = await LoanEvent.count({
