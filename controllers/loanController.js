@@ -69,12 +69,15 @@ const openPosition = wrap("opening loan", async (req, res) => {
     now,
     isTest: await clock.isTest(req),
   });
+  const data = await service.serializePosition(position, { now });
   res.status(created ? 201 : 200).json({
     success: true,
-    message: created
-      ? "Loan active. Net disbursement credited to your IDR wallet."
-      : "Loan already created (idempotent).",
-    data: await service.serializePosition(position, { now }),
+    message: !created
+      ? "Loan already created (idempotent)."
+      : data.status === "PENDING_COLLATERAL"
+        ? "Loan request received — collateral is being locked, please check back shortly."
+        : "Loan active. Net disbursement credited to your IDR wallet.",
+    data,
   });
 });
 

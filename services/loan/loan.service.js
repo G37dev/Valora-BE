@@ -518,12 +518,30 @@ async function openPosition({ coreId, body, now, isTest = false }) {
   }
   if (!created) return { position, created: false };
 
-  const activated = await completePendingCollateral(position.id, {
-    now,
-    qty: input.qty,
-    apr,
-    policy,
-  });
+  let activated;
+  try {
+    activated = await withTimeout(
+      completePendingCollateral(position.id, {
+        now,
+        qty: input.qty,
+        apr,
+        policy,
+      }),
+      OPEN_CHAIN_BUDGET_MS,
+      "openPosition collateral lock",
+    );
+  } catch (e) {
+    // Timeout ≠ gagal: chain op jalan terus di background (approve mungkin
+    // sudah on-chain). Posisi tetap PENDING_COLLATERAL — reconcile yang
+    // menyelesaikan; app dapat status pending daripada request mati 300s.
+    if (/timed out after/.test(e.message)) {
+      return {
+        position: await LoanPosition.findByPk(position.id),
+        created: true,
+      };
+    }
+    throw e;
+  }
   return { position: activated, created: true };
 }
 
@@ -742,6 +760,9 @@ const PENDING_COLLATERAL_MAX_ATTEMPTS = Number(
 );
 const RECONCILE_RESUME_TIMEOUT_MS = Number(
   process.env.LOAN_RECONCILE_RESUME_TIMEOUT_MS ?? 150_000,
+);
+const OPEN_CHAIN_BUDGET_MS = Number(
+  process.env.LOAN_OPEN_CHAIN_BUDGET_MS ?? 90_000,
 );
 const withTimeout = (promise, ms, label) =>
   Promise.race([
