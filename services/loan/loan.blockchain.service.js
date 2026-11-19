@@ -36,7 +36,7 @@ const crypto = require("crypto");
 const Decimal = require("decimal.js");
 const { ASSET } = require("./loan.constants");
 const { tokenRaw } = require("./loan.calc");
-const { Wallet } = require("../../models");
+const { Wallet, sequelize } = require("../../models");
 
 const ESCROW_ADDRESS = {
   [ASSET.XAUT]: process.env.LOAN_ESCROW_XAUT_ADDRESS,
@@ -163,6 +163,17 @@ function viemClients() {
   return _viem;
 }
 
+/*
+ * Semua escrow tx keluar dari SATU operator EOA. Tanpa mutex global,
+ * dua instance serverless bisa baca pending nonce yang sama lalu
+ * broadcast tx bentrok (nonce too low / replacement). pg_advisory_xact_lock
+ * menserialisasi bagian nonce-assignment + broadcast di SELURUH instance
+ * (session-scoped, auto-release di commit/rollback — tak bisa deadlock
+ * permanen). Receipt wait sengaja di luar lock: yang diserialkan hanya
+ * jendela ~2-3 detik sampai tx masuk mempool.
+ */
+const ESCROW_OPS_ADVISORY_KEY = 86753091; // konstanta bebas — satu operator EOA
+
 async function sendEscrowTx(asset, method, params, label) {
   const v = viemClients();
   const functionName = method.match(/function\s+(\w+)/)[1];
@@ -171,10 +182,23 @@ async function sendEscrowTx(asset, method, params, label) {
     functionName,
     args: params,
   });
-  const txHash = await v.walletClient.sendTransaction({
-    to: ESCROW_ADDRESS[asset],
-    data,
-  });
+
+  const t = await sequelize.transaction();
+  let txHash;
+  try {
+    await sequelize.query("SELECT pg_advisory_xact_lock(:key)", {
+      replacements: { key: ESCROW_OPS_ADVISORY_KEY },
+      transaction: t,
+    });
+    txHash = await v.walletClient.sendTransaction({
+      to: ESCROW_ADDRESS[asset],
+      data,
+    });
+    await t.commit();
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    throw error;
+  }
   if (!txHash) throw new Error(`${label}: transaction hash missing`);
   const receipt = await v.publicClient.waitForTransactionReceipt({
     hash: txHash,
